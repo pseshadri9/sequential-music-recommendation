@@ -1,0 +1,14 @@
+# exclude any directories with potentially large (qty or size) files (currently datasets/ and logger_runs/)
+datasets/*
+!datasets/.gitkeep 
+
+logger_runs/*
+!logger_runs/.gitkeep
+
+#exclude email_args.py for sensitive info
+notification/email_args.py
+
+#ignore pycache
+/pycache/*
+*.pyc
+# add any others as necessary
