@@ -38,4 +38,3 @@ I am tired of rewriting ML experimentation pipelines 40! times so this is a gene
 	HEADER = 'dummy header'
 	SUBJECT = 'dummy subject'
 	
-	

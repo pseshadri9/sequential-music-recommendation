@@ -1,6 +1,6 @@
 import smtplib, ssl
 from email.message import EmailMessage
-from .email_args import SOURCE_EMAIL, PASSWORD, DESTINATION_EMAIL, HEADER, SUBJECT
+from email_args import SOURCE_EMAIL, PASSWORD, DESTINATION_EMAIL, HEADER, SUBJECT
 
 PORT = 465 # For SSL
 '''
@@ -8,7 +8,7 @@ function to send notification email from SOURCE_EMAIL to DESTINATION_EMAIL
 args expects a dict of metrics in form of {'metric_name': metric}. 
 Default subject and headers can be defined in email_args.py
 '''
-def send_email(args: dict=None, subject: str= SUBJECT, header: str= HEADER):
+def send_email(args: dict=None, subject: str = SUBJECT, header:str = HEADER):
 
     context = ssl.create_default_context()
     msg = EmailMessage()
