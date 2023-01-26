@@ -8,8 +8,8 @@ Define experiment run arguments here
 def parse_args():
     parser = argparse.ArgumentParser()
     
-    #parser.add_argument('--dummy', type=str, default='Dummy Command', help='dummy command')
     parser.add_argument('--logdir', type=str, default='logger_runs/', help='directory to save logs')
+    parser.add_argument('--datadir', type=str, default='datasets/transition_store/', help='directory to save data')
 
     return parser.parse_args()
 
