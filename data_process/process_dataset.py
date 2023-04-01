@@ -106,7 +106,7 @@ class SpotifyDataModule(pl.LightningDataModule):
             vocab = vocab.union(vocab_i)
             session_ids.extend(session_ids_i)
             pbar.set_description(f'vocab: {len(vocab)} sessions:{len(sessions)}')
-            
+
             if len(sessions) > 10000000: #stop when 10M sessions are sampled
                 break
         
@@ -123,11 +123,11 @@ class SpotifyDataModule(pl.LightningDataModule):
     def append_special_tokens(self, l):
         return [CLS] + self.zeropad(l, 20) #size of each sequence
     
-    def skip_preprocess(self, l): #do not consider weak skips + pad
-        return self.zeropad([x - 1 if x != 0 else 0 for x in l], 20, padding_val=SKIP_PAD)
+    def skip_preprocess(self, l, binary=True): #do not consider weak skips + pad. binary=True ignores severity of skip
+        if binary:
+            return [SKIP_PAD] + self.zeropad([1 if x > 1 else 0 for x in l], 20, padding_val=SKIP_PAD)
 
-
-
+        return [SKIP_PAD] + self.zeropad([x - 1 if x != 0 else 0 for x in l], 20, padding_val=SKIP_PAD)
 
     def load_csv(self, f):
         cols = ['session_position', 'track_id_clean', 'skip_level', 'session_id'] #+ ['skip_1', 'skip_2', 'skip_3']
@@ -135,8 +135,13 @@ class SpotifyDataModule(pl.LightningDataModule):
 
         #0 = no skip, 3 = strongest skip
         df['skip_level'] = ((df['skip_1'].astype(int) + df['skip_2'].astype(int) + df['skip_3'].astype(int)))
-        df = df[cols].sort_values(by = ['session_id','session_position'], axis=0)
-        groups = df.groupby(['session_id']) #.filter(lambda x: (x.skip_level < 2).all()) #Do not consider sessions with no skips
+        df = df[cols]
+
+        groups = df.groupby(['session_id'])
+        df = df.loc[groups['skip_level'].transform('max') > 1,:].sort_values(by = 
+                ['session_id','session_position'], axis=0) #Do not consider sessions with no skips
+        groups = df.groupby(['session_id'])
+
         sessions = groups['track_id_clean'].apply(list)
         skips = groups['skip_level'].apply(list)
         vocab = set(df['track_id_clean'].to_list())
@@ -160,36 +165,6 @@ class SpotifyDataModule(pl.LightningDataModule):
             print(check_sessions and check_skips and check_id)
         '''
         return sessions, skips, vocab, session_ids
-
-  
-    def prepare_data(self, data):
-        data.st = data.st.apply(lambda x: ast.literal_eval(x))
-        data.skip = data.skip.apply(lambda x: ast.literal_eval(x))
-        st = []
-        u_ids = []
-        for st_it in data.st:
-            u_ids.append(st_it[0])
-            st_ = self.__class__._add_special_tokens(st_it[1:])
-            st.append(st_)
-
-        dataset = TensorDataset(torch.tensor(st),
-                                torch.tensor(u_ids),
-                                torch.tensor(data.lst.tolist()),
-                                torch.tensor(data.a.tolist()),
-                                torch.tensor(data.buy.tolist()),
-                                torch.tensor(data.skip.tolist()))
-        return DataLoader(dataset, 
-                          batch_size = self.batch_size, shuffle=True)
-    @staticmethod
-    def _add_special_tokens(st):
-        if type(st) == list:
-            st_mod = [constants.CLS_ITEM]
-            st_mod.extend(st)
-        elif type(st) == torch.Tensor:
-            st_mod = torch.cat((torch.ones(st.size(0)).unsqueeze(1) * constants.CLS_ITEM, st), dim=-1)  # add CLS token
-        else:
-            raise TypeError(f'Argument st should have type list or torch.Tensor but had {type(st)} instead.')
-        return st_mod
   
     def setup(self, stage='TRAIN', select_criterion=None):
         
@@ -204,7 +179,9 @@ class SpotifyDataModule(pl.LightningDataModule):
         else:
             self.test_data, self.vocab = self.split_data(sessions, skips, vocab, stage=stage)
         
-        print(self.val_data[0][0], self.train_data[1][1], self.vocab.shape)
+        #print(self.val_data[0][0], self.train_data[1][1], self.vocab.shape)
+
+        return self.train_dataloader()
     
     def split_data(self, sessions, skips, vocab, stage='TRAIN'):
         sessions = torch.Tensor(sessions) #N x 20
