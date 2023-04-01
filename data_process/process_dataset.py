@@ -179,9 +179,6 @@ class SpotifyDataModule(pl.LightningDataModule):
         else:
             self.test_data, self.vocab = self.split_data(sessions, skips, vocab, stage=stage)
         
-        #print(self.val_data[0][0], self.train_data[1][1], self.vocab.shape)
-
-        return self.train_dataloader()
     
     def split_data(self, sessions, skips, vocab, stage='TRAIN'):
         sessions = torch.Tensor(sessions) #N x 20
