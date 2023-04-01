@@ -207,5 +207,8 @@ class SpotifyDataModule(pl.LightningDataModule):
         return DataLoader(self.test_data, self.batch_size)
 
 class SeqDataset(Dataset):
-    def __init__(self):
-        pass
+    def __init__(self, *tensors):
+        tensors = tensors
+        self.shape = (len(tensors), *(x.shape for x in tensors))
+    def __get_item__(self, idx):
+        return (x[idx] for x in tensors)
