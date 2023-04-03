@@ -2,7 +2,7 @@ import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 import pytorch_lightning as pl
-from torch.utils.data import TensorDataset, DataLoader, Dataset 
+from torch.utils.data import TensorDataset, DataLoader, Dataset
 import torch
 import os
 import pandas as pd
@@ -33,6 +33,13 @@ NUM_RESERVED_TOKENS = 3
 
 #Reserved Skip Tokens
 SKIP_PAD = 3
+
+class TensorDataset(Dataset):
+    def __init__(self, *tensors):
+        tensors = tensors
+        self.shape = (len(tensors), *(x.shape for x in tensors))
+    def __get_item__(self, idx):
+        return (x[idx] for x in tensors)
 
 class LfMDataModule(pl.LightningDataModule):
     def __init__(self, filepath, batch_size):
@@ -107,7 +114,7 @@ class SpotifyDataModule(pl.LightningDataModule):
             session_ids.extend(session_ids_i)
             pbar.set_description(f'vocab: {len(vocab)} sessions:{len(sessions)}')
 
-            if len(sessions) > 10000000: #stop when 10M sessions are sampled
+            if len(sessions) > 100: #stop when 10M sessions are sampled
                 break
         
         vocab = {v :k + NUM_RESERVED_TOKENS for k, v in enumerate(vocab)}
@@ -120,14 +127,17 @@ class SpotifyDataModule(pl.LightningDataModule):
             return l
         return l + [padding_val] * (length - len(l))
     
-    def append_special_tokens(self, l):
+    def append_special_tokens(self, l, unidirectional = False):
+        if unidirectional:
+            return self.zeropad(l, 20) + [CLS]
         return [CLS] + self.zeropad(l, 20) #size of each sequence
     
-    def skip_preprocess(self, l, binary=True): #do not consider weak skips + pad. binary=True ignores severity of skip
+    def skip_preprocess(self, l, binary=True, unidirectional = False): #do not consider weak skips + pad. binary=True ignores severity of skip
         if binary:
-            return [SKIP_PAD] + self.zeropad([1 if x > 1 else 0 for x in l], 20, padding_val=SKIP_PAD)
-
-        return [SKIP_PAD] + self.zeropad([x - 1 if x != 0 else 0 for x in l], 20, padding_val=SKIP_PAD)
+           seq = self.zeropad([1 if x > 1 else 0 for x in l], 20, padding_val=SKIP_PAD)
+        else:
+            seq = self.zeropad([x - 1 if x != 0 else 0 for x in l], 20, padding_val=SKIP_PAD)
+        return seq + [SKIP_PAD] if unidirectional else [SKIP_PAD] + seq
 
     def load_csv(self, f):
         cols = ['session_position', 'track_id_clean', 'skip_level', 'session_id'] #+ ['skip_1', 'skip_2', 'skip_3']
@@ -206,9 +216,3 @@ class SpotifyDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(self.test_data, self.batch_size)
 
-class SeqDataset(Dataset):
-    def __init__(self, *tensors):
-        tensors = tensors
-        self.shape = (len(tensors), *(x.shape for x in tensors))
-    def __get_item__(self, idx):
-        return (x[idx] for x in tensors)
