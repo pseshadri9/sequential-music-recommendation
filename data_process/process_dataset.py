@@ -34,12 +34,16 @@ NUM_RESERVED_TOKENS = 3
 #Reserved Skip Tokens
 SKIP_PAD = 3
 
+'''
 class TensorDataset(Dataset):
     def __init__(self, *tensors):
         tensors = tensors
         self.shape = (len(tensors), *(x.shape for x in tensors))
     def __get_item__(self, idx):
         return (x[idx] for x in tensors)
+    def __len__(self):
+        return 
+'''
 
 class LfMDataModule(pl.LightningDataModule):
     def __init__(self, filepath, batch_size):
@@ -191,9 +195,9 @@ class SpotifyDataModule(pl.LightningDataModule):
         
     
     def split_data(self, sessions, skips, vocab, stage='TRAIN'):
-        sessions = torch.Tensor(sessions) #N x 20
-        skips = torch.Tensor(skips)
-        vocab = torch.Tensor(sorted(vocab.values()))
+        sessions = torch.Tensor(sessions).long() #N x 20
+        skips = torch.Tensor(skips).long()
+        vocab = torch.Tensor(sorted(vocab.values())).long()
         targets = sessions[:, -1] #last element
         if stage == 'TEST':
             return TensorDataset(sessions[:, :-1], skips[:, :-1], targets), vocab

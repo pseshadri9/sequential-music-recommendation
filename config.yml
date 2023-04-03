@@ -1,16 +1,15 @@
 model_params:
-  name: 'Vanilla Transformer'
-  max_seq_len: 3
+  max_seq_len: 20
   h_dim: 256
-  n_head : 4
+  nhead : 4
   token_dim: 256
   nEncoders: 2
   dropout: 0.2
 
 data_params:
   data_path: "/mnt/data2/pavans/pavans/training_set/"
-  train_batch_size: 256
-  val_batch_size:  256
+  train_batch_size: 128
+  val_batch_size:  128
   patch_size: 64
   num_workers: 4
 
@@ -20,8 +19,9 @@ exp_params:
   manual_seed: 1265
 
 trainer_params:
-  gpus: [1]
   max_epochs: 10
+  accelerator: "gpu"
+  devices: 1
 
 logging_params:
   save_dir: "logger_runs/logs/"

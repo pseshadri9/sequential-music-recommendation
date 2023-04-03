@@ -4,7 +4,7 @@ import torch
 class VanillaTransformer(pl.LightningModule): 
     def __init__(self, max_seq_len = None, vocab_size = None, h_dim = None, 
                 lr = 0.005, nhead = 4, token_dim = None, dropout = 0.5, nEncoders = 1): 
-        super(model, self).__init__()
+        super(VanillaTransformer, self).__init__()
           
         # Define model architecture
 
@@ -13,12 +13,12 @@ class VanillaTransformer(pl.LightningModule):
         self.pe = torch.nn.Embedding(max_seq_len, token_dim)
         self.vocab = torch.nn.Embedding(vocab_size, token_dim)
 
-        encoder_layers = TransformerEncoderLayer(token_dim, nhead, h_dim, dropout)
+        encoder_layers = torch.nn.TransformerEncoderLayer(token_dim, nhead, h_dim, dropout, batch_first=True)
         self.encoder = torch.nn.TransformerEncoder(encoder_layers, nEncoders)
 
-        self.decoder = nn.Sequential(nn.Linear(h_dim, vocab_size), nn.LogSoftmax(dim=-1))
+        self.decoder = torch.nn.Sequential(torch.nn.Linear(h_dim, vocab_size))
 
-        self.mask = _generate_square_subsequent_mask(self, max_seq_len)
+        self.mask = None
         
         # Defining learning rate
         self.lr = lr
@@ -34,13 +34,15 @@ class VanillaTransformer(pl.LightningModule):
     
     def _generate_square_subsequent_mask(self, sz):
         mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
-        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0)).to(self.device)
         return mask
 
     def forward(self, x):
-        embs = self.pe(torch.linspace(0,self.max_seq_len - 1, 1)) + self.vocab(x)
+        if not self.mask:
+            self.mask = self._generate_square_subsequent_mask(self.max_seq_len)
+        embs = self.pe(torch.linspace(0,self.max_seq_len - 1, 1).long().to(self.device)) + self.vocab(x)
 
-        return self.fc(self.encoder(embs, self.mask))
+        return self.decoder(self.encoder(embs, self.mask))
 
         
     
@@ -53,6 +55,7 @@ class VanillaTransformer(pl.LightningModule):
         # Defining training step for our model
         sessions, _ , targets = train_batch 
         output = self.forward(sessions)
+        print(output.shape)
         output = output.view(-1, self.vocab_size)
         return self.loss(output, targets)
 
@@ -60,7 +63,8 @@ class VanillaTransformer(pl.LightningModule):
     def validation_step(self, valid_batch, batch_idx): 
         
         # Defining validation steps for our model
-        sessions, _ , targets = train_batch 
+        sessions, _ , targets = valid_batch 
         output = self.forward(sessions)
+        print(output.shape)
         output = output.view(-1, self.vocab_size)
         return self.loss(output, targets)
