@@ -118,11 +118,11 @@ class SpotifyDataModule(pl.LightningDataModule):
             session_ids.extend(session_ids_i)
             pbar.set_description(f'vocab: {len(vocab)} sessions:{len(sessions)}')
 
-            if len(sessions) > 100: #stop when 10M sessions are sampled
+            if len(sessions) > 3000000: #stop when 10M sessions are sampled
                 break
         
         vocab = {v :k + NUM_RESERVED_TOKENS for k, v in enumerate(vocab)}
-        sessions = [self.append_special_tokens([vocab[x] for x in session]) for session in sessions]
+        sessions = [[vocab[x] for x in session] for session in sessions]
         skips = [self.skip_preprocess(skip) for skip in skips]
         return sessions, skips, vocab, session_ids
     
@@ -192,13 +192,16 @@ class SpotifyDataModule(pl.LightningDataModule):
             self.train_data, self.val_data, self.vocab = self.split_data(sessions, skips, vocab, stage=stage)
         else:
             self.test_data, self.vocab = self.split_data(sessions, skips, vocab, stage=stage)
+    
         
     
     def split_data(self, sessions, skips, vocab, stage='TRAIN'):
+        targets = [x[-1] for x in sessions]
+        sessions = [self.append_special_tokens(x) for x in sessions]
         sessions = torch.Tensor(sessions).long() #N x 20
         skips = torch.Tensor(skips).long()
-        vocab = torch.Tensor(sorted(vocab.values())).long()
-        targets = sessions[:, -1] #last element
+        vocab = torch.Tensor(sorted(vocab.values()) + [x for x in range(NUM_RESERVED_TOKENS)]).long()
+        targets = torch.Tensor(targets).long() #sessions[:, -1] #last element
         if stage == 'TEST':
             return TensorDataset(sessions[:, :-1], skips[:, :-1], targets), vocab
         else:
@@ -212,11 +215,47 @@ class SpotifyDataModule(pl.LightningDataModule):
             return train, val, vocab
     
     def train_dataloader(self):
-        return DataLoader(self.train_data, self.batch_size)
+        return DataLoader(self.train_data, self.batch_size, num_workers = 6, shuffle=True)
     
     def val_dataloader(self):
-        return DataLoader(self.val_data, self.batch_size)
+        return DataLoader(self.val_data, self.batch_size, num_workers = 6)
 
     def test_dataloader(self):
-        return DataLoader(self.test_data, self.batch_size)
+        return DataLoader(self.test_data, self.batch_size, num_workers=6)
 
+class DataSampler:
+    def __init__(self, filepath, n=1e7,seed=1, path='Sampled_{}', 
+        name='data-{}.csv', chunk_size=1e6):
+        self.save_path = os.path.join(filepath, path.format(str(n)))
+        self.name = name
+        self.seed = seed
+        self.n = n
+        self.cols = ['session_position', 'track_id_clean', 'skip_level', 'session_id']
+        self.data = self.load_n_samples(filepath)
+
+        self.save_data(self.data, chunk_size=chunk_size)
+    
+    def load_n_samples(self, filepath):
+        pbar = tqdm(sorted(os.listdir(filepath)))
+        print(f'working on path :{filepath}')
+        df_all = pd.DataFrame()
+        dfs = list()
+        for x in pbar:
+            df = pd.read_csv(os.path.join(filepath, x))
+            df['skip_level'] = ((df['skip_1'].astype(int) + df['skip_2'].astype(int) + df['skip_3'].astype(int)))
+            #df_all = pd.concat((df_all, df[self.cols]))
+            dfs.append(df[self.cols])
+            pbar.set_description(f'Size: {len(df_all)}')
+        
+        while len(dfs) > 0:
+            df_all = pd.concat((df_all, dfs[-1]))
+            del dfs[-1]
+        
+        return df_all.groupby('session_id').sample(n=self.n, random_state=self.seed)
+    
+    def save_data(self, data, num_chunks = 10):
+        chunk_size = int(len(data) / num_chunks)
+        path = os.path.join(self.save_path, self.name)
+        print(f'saving to path: {self.save_path}')
+        for start in tqdm(range(0, df.shape[0], chunk_size)):
+            df.iloc[start:start + chunk_size].to_csv(path.format(str(start // chunk_size)))
