@@ -31,6 +31,7 @@ if __name__ == '__main__':
         config = yaml.safe_load(file)
     
     torch.manual_seed(config['exp_params']['manual_seed'])
+    torch.cuda.empty_cache()
     args.start_time = datetime.datetime.now().strftime(format="%d_%m_%Y__%H_%M_%S")
     print(f'Run started at {args.start_time} with args:\n\n{config}\n')
 

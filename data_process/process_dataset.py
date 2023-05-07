@@ -94,12 +94,14 @@ class LfMDataModule(pl.LightningDataModule):
         self.test_data = self.prepare_data(pd.read_csv(self.filepath + dirs[TEST]))
 
 class SpotifyDataModule(pl.LightningDataModule):
-    def __init__(self, filepath, batch_size):
+    def __init__(self, filepath, batch_size, max_seq_len=20, preprocess='contrastive'):
         super().__init__()
           
         self.filepath = filepath
+        self.preprocess = preprocess
           
         self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
 
         self.setup()
     
@@ -118,30 +120,55 @@ class SpotifyDataModule(pl.LightningDataModule):
             session_ids.extend(session_ids_i)
             pbar.set_description(f'vocab: {len(vocab)} sessions:{len(sessions)}')
 
-            if len(sessions) > 3000000: #stop when 10M sessions are sampled
+            if len(sessions) > 50000: #stop when 10M sessions are sampled
                 break
         
-        vocab = {v :k + NUM_RESERVED_TOKENS for k, v in enumerate(vocab)}
-        sessions = [[vocab[x] for x in session] for session in sessions]
-        skips = [self.skip_preprocess(skip) for skip in skips]
-        return sessions, skips, vocab, session_ids
+        return self.preprocess_data(sessions, skips, vocab, session_ids)
     
+    def preprocess_data(self, sessions, skips, vocab, session_ids):
+        vocab = {v :k + NUM_RESERVED_TOKENS for k, v in enumerate(vocab)}
+        if self.preprocess is None:
+            sessions = [[vocab[x] for x in session] for session in sessions]
+        elif self.preprocess == 'positive':
+            temp = list()
+            for session, skip in zip(sessions, skips):
+                temp.append(list())
+                for idx, (_ , _) in enumerate(zip(session, skip)):
+                    if skip[idx] > 1:
+                        temp[-1].append(vocab[session[idx]])
+            sessions = temp
+        elif self.preprocess == 'contrastive':
+            sessions = [[vocab[x] for x in session] for session in sessions]
+            for idx, skip in enumerate(skips):
+                for idx, _ in enumerate(skip):
+                    count = 1
+                    while (idx + count) < len(skip) and skip[idx + count] <= 1:
+                        count += 1
+                    skip[idx] = idx + count
+                skips[idx] = skip
+                    
+        skips = [self.skip_preprocess(skip) for skip in skips]
+
+        return sessions, skips, vocab, session_ids
+
+
+
     def zeropad(self, l, length, padding_val = PAD):
         if len(l) >= length:
             return l
         return l + [padding_val] * (length - len(l))
     
-    def append_special_tokens(self, l, unidirectional = False):
-        if unidirectional:
-            return self.zeropad(l, 20) + [CLS]
-        return [CLS] + self.zeropad(l, 20) #size of each sequence
+    def append_special_tokens(self, l):
+        return self.zeropad(l, self.max_seq_len) #size of each sequence
     
     def skip_preprocess(self, l, binary=True, unidirectional = False): #do not consider weak skips + pad. binary=True ignores severity of skip
         if binary:
-           seq = self.zeropad([1 if x > 1 else 0 for x in l], 20, padding_val=SKIP_PAD)
+           seq = self.zeropad([1 if x > 1 else 0 for x in l], self.max_seq_len, padding_val=SKIP_PAD)
+        elif self.preprocess == 'contrastive':
+            seq = self.zeropad(l, self.max_seq_len, padding_val=SKIP_PAD)
         else:
-            seq = self.zeropad([x - 1 if x != 0 else 0 for x in l], 20, padding_val=SKIP_PAD)
-        return seq + [SKIP_PAD] if unidirectional else [SKIP_PAD] + seq
+            seq = self.zeropad([x - 1 if x != 0 else 0 for x in l], self.max_seq_len, padding_val=SKIP_PAD)
+        return seq #+ [SKIP_PAD] if unidirectional else [SKIP_PAD] + seq
 
     def load_csv(self, f):
         cols = ['session_position', 'track_id_clean', 'skip_level', 'session_id'] #+ ['skip_1', 'skip_2', 'skip_3']
@@ -152,8 +179,8 @@ class SpotifyDataModule(pl.LightningDataModule):
         df = df[cols]
 
         groups = df.groupby(['session_id'])
-        df = df.loc[groups['skip_level'].transform('max') > 1,:].sort_values(by = 
-                ['session_id','session_position'], axis=0) #Do not consider sessions with no skips
+        df = df.loc[(groups['skip_level'].transform('max') > 1) & (groups['session_id'].transform('size') > 5) 
+                    & (groups['skip_level'].transform(lambda x: max(*x[-3:])) <2),:].sort_values(by = ['session_id','session_position'], axis=0) #Do not consider sessions with no skips
         groups = df.groupby(['session_id'])
 
         sessions = groups['track_id_clean'].apply(list)
@@ -189,30 +216,38 @@ class SpotifyDataModule(pl.LightningDataModule):
             sessions, skips, vocab, session_ids = self.load_data(self.filepath)
         
         if stage == 'TRAIN':
-            self.train_data, self.val_data, self.vocab = self.split_data(sessions, skips, vocab, stage=stage)
+            self.train_data, self.val_data, self.test, self.vocab = self.split_data(sessions, skips, vocab)
         else:
             self.test_data, self.vocab = self.split_data(sessions, skips, vocab, stage=stage)
     
         
     
-    def split_data(self, sessions, skips, vocab, stage='TRAIN'):
-        targets = [x[-1] for x in sessions]
-        sessions = [self.append_special_tokens(x) for x in sessions]
-        sessions = torch.Tensor(sessions).long() #N x 20
-        skips = torch.Tensor(skips).long()
-        vocab = torch.Tensor(sorted(vocab.values()) + [x for x in range(NUM_RESERVED_TOKENS)]).long()
-        targets = torch.Tensor(targets).long() #sessions[:, -1] #last element
-        if stage == 'TEST':
-            return TensorDataset(sessions[:, :-1], skips[:, :-1], targets), vocab
-        else:
-            indices = torch.randperm(sessions.shape[0])
-            val = TensorDataset(sessions[indices[:2 * sessions.shape[0] // 10], :-1], 
-                skips[indices[:2 * sessions.shape[0] // 10], :-1], targets[:2 * sessions.shape[0] // 10])
+    def split_data(self, sessions, skips, vocab):
+        test_targets = list()
+        val_targets = list()
+        last_train_targets = list()
+        for x in sessions:
+            test_targets.append(x[-1])
+            val_targets.append(x[-2])
+            last_train_targets.append(x[-3])
+        train_targets = [self.zeropad(x[1:-2], self.max_seq_len) for x in sessions]
+        sessions = [self.append_special_tokens(x[:-3]) for x in sessions]
+        sessions = torch.tensor(sessions).int() #N x 20
+        skips = torch.tensor(skips, dtype=torch.int8) #[0,0,0,0,1,0,1,0,0]
+        vocab = torch.tensor(sorted(vocab.values()) + [x for x in range(NUM_RESERVED_TOKENS)]).int()
+        train_targets = torch.tensor(train_targets).int()
+        test_targets = torch.tensor(test_targets).int()
+        val_targets = torch.tensor(val_targets).int()
+        last_train_targets = torch.tensor(last_train_targets).int()
 
-            train = TensorDataset(sessions[indices[2 * sessions.shape[0] // 10:], :-1], 
-                skips[indices[2 * sessions.shape[0] // 10:], :-1], targets[2 * sessions.shape[0] // 10:])
+        train = TensorDataset(sessions, train_targets, skips)
+
+        val = TensorDataset(sessions, last_train_targets, val_targets)
+
+        test = TensorDataset(sessions, last_train_targets, val_targets, test_targets)
+
             
-            return train, val, vocab
+        return train, val, test, vocab
     
     def train_dataloader(self):
         return DataLoader(self.train_data, self.batch_size, num_workers = 6, shuffle=True)
