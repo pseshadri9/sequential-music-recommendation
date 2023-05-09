@@ -4,6 +4,7 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 import pytorch_lightning as pl
 from torch.utils.data import TensorDataset, DataLoader, Dataset
 import torch
+from random import Random
 import os
 import pandas as pd
 import ast
@@ -11,6 +12,7 @@ from data_process import constants
 from tqdm import tqdm
 
 torch.manual_seed(0)
+r = Random(0)
 
 TRAIN = 'train'
 TEST = 'test'
@@ -110,17 +112,21 @@ class SpotifyDataModule(pl.LightningDataModule):
         skips = list()
         vocab = set()
         session_ids = list()
-        pbar = tqdm(sorted(os.listdir(filepath)))
+        total_interactions = 0
+        #pbar = tqdm(sorted(os.listdir(filepath)))
+        files = os.listdir(filepath)
+        r.shuffle(files)
+        pbar = tqdm(files)
         for x in pbar:
             sessions_i, skips_i, vocab_i, session_ids_i = self.load_csv(os.path.join(filepath, x))
-
+            total_interactions += sum([len(x) for x in sessions_i])
             sessions.extend(sessions_i)
             skips.extend(skips_i)
             vocab = vocab.union(vocab_i)
             session_ids.extend(session_ids_i)
-            pbar.set_description(f'vocab: {len(vocab)} sessions:{len(sessions)}')
+            pbar.set_description(f'vocab: {len(vocab)} sessions:{len(sessions)} interactions: {total_interactions}')
 
-            if len(sessions) > 50000: #stop when 10M sessions are sampled
+            if total_interactions > 2000000: #stop when 10M sessions are sampled
                 break
         
         return self.preprocess_data(sessions, skips, vocab, session_ids)
@@ -215,10 +221,7 @@ class SpotifyDataModule(pl.LightningDataModule):
         else:
             sessions, skips, vocab, session_ids = self.load_data(self.filepath)
         
-        if stage == 'TRAIN':
-            self.train_data, self.val_data, self.test, self.vocab = self.split_data(sessions, skips, vocab)
-        else:
-            self.test_data, self.vocab = self.split_data(sessions, skips, vocab, stage=stage)
+        self.train_data, self.val_data, self.test_data, self.vocab = self.split_data(sessions, skips, vocab)
     
         
     
@@ -250,13 +253,13 @@ class SpotifyDataModule(pl.LightningDataModule):
         return train, val, test, vocab
     
     def train_dataloader(self):
-        return DataLoader(self.train_data, self.batch_size, num_workers = 6, shuffle=True)
+        return DataLoader(self.train_data, self.batch_size, num_workers = 4, shuffle=True, pin_memory = False)
     
     def val_dataloader(self):
-        return DataLoader(self.val_data, self.batch_size, num_workers = 6)
+        return DataLoader(self.val_data, self.batch_size, num_workers = 4, pin_memory = False)
 
     def test_dataloader(self):
-        return DataLoader(self.test_data, self.batch_size, num_workers=6)
+        return DataLoader(self.test_data, self.batch_size, num_workers= 4, pin_memory = False)
 
 class DataSampler:
     def __init__(self, filepath, n=1e7,seed=1, path='Sampled_{}', 

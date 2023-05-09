@@ -141,7 +141,7 @@ class VanillaTransformer(pl.LightningModule):
 
     def get_test_batch(self, test_batch):
         last_target = test_batch[-1]
-        return self.get_val_batch(*self.get_val_batch(test_batch[:-1]), last_target)
+        return self.get_val_batch((*self.get_val_batch(test_batch[:-1]), last_target))
     
     def on_validation_epoch_end(self):
         #top_k = self.test_top_k(self.val_outs)

@@ -3,10 +3,6 @@ channels:
   - defaults
 dependencies:
   - python=3.9
-  - pytorch-cuda=11.7
-  - torchaudio
-  - torchvision
-  - pytorch
   - pytorch-lightning
   - numpy
   - pandas

@@ -8,20 +8,20 @@ model_params:
   k: [1, 5, 10, 50, 100]
 
 data_params:
-  data_path: "/mnt/data2/pavans/pavans/training_set/"
-  batch_size: 32
+  data_path: "/media/media/pavans/spotify/training_set/"
+  batch_size: 128
   patch_size: 64
   num_workers: 4
 
 
 exp_params:
-  lr: 0.0001
+  lr: 0.001
   manual_seed: 1265
 
 trainer_params:
   max_epochs: 25
   accelerator: "gpu"
-  devices: [0, 1]
+  devices: [0]
 
 logging_params:
   save_dir: "logger_runs/logsTransformer/"
