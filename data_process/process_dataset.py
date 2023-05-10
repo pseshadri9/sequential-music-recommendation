@@ -29,12 +29,12 @@ FILE_EXT = '.csv'
 #Reserved Sequence Tokens
 PAD = 0
 CLS = 1
-MSK = 2
+MSK = 3
 
 NUM_RESERVED_TOKENS = 3
 
 #Reserved Skip Tokens
-SKIP_PAD = 3
+SKIP_PAD = 2
 
 '''
 class TensorDataset(Dataset):
@@ -96,7 +96,7 @@ class LfMDataModule(pl.LightningDataModule):
         self.test_data = self.prepare_data(pd.read_csv(self.filepath + dirs[TEST]))
 
 class SpotifyDataModule(pl.LightningDataModule):
-    def __init__(self, filepath, batch_size, max_seq_len=20, preprocess='contrastive'):
+    def __init__(self, filepath, batch_size, max_seq_len=20, preprocess=None):
         super().__init__()
           
         self.filepath = filepath
@@ -169,7 +169,7 @@ class SpotifyDataModule(pl.LightningDataModule):
     
     def skip_preprocess(self, l, binary=True, unidirectional = False): #do not consider weak skips + pad. binary=True ignores severity of skip
         if binary:
-           seq = self.zeropad([1 if x > 1 else 0 for x in l], self.max_seq_len, padding_val=SKIP_PAD)
+           seq = self.zeropad([0 if x > 1 else 1 for x in l], self.max_seq_len, padding_val=SKIP_PAD) #0 = SKIP, 1 = POSITIVE
         elif self.preprocess == 'contrastive':
             seq = self.zeropad(l, self.max_seq_len, padding_val=SKIP_PAD)
         else:
@@ -186,7 +186,7 @@ class SpotifyDataModule(pl.LightningDataModule):
 
         groups = df.groupby(['session_id'])
         df = df.loc[(groups['skip_level'].transform('max') > 1) & (groups['session_id'].transform('size') > 5) 
-                    & (groups['skip_level'].transform(lambda x: max(*x[-3:])) <2),:].sort_values(by = ['session_id','session_position'], axis=0) #Do not consider sessions with no skips
+                    ,:].sort_values(by = ['session_id','session_position'], axis=0) #Do not consider sessions with no skips & (groups['skip_level'].transform(lambda x: max(*x[-3:])) <2)
         groups = df.groupby(['session_id'])
 
         sessions = groups['track_id_clean'].apply(list)
@@ -245,9 +245,9 @@ class SpotifyDataModule(pl.LightningDataModule):
 
         train = TensorDataset(sessions, train_targets, skips)
 
-        val = TensorDataset(sessions, last_train_targets, val_targets)
+        val = TensorDataset(sessions, last_train_targets, val_targets, skips)
 
-        test = TensorDataset(sessions, last_train_targets, val_targets, test_targets)
+        test = TensorDataset(sessions, last_train_targets, val_targets, test_targets, skips)
 
             
         return train, val, test, vocab

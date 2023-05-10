@@ -1,5 +1,6 @@
 import pytorch_lightning as pl
 import torch
+from torchmetrics import AUROC
 from tqdm import tqdm
 
 class VanillaTransformer(pl.LightningModule): 
@@ -39,6 +40,10 @@ class VanillaTransformer(pl.LightningModule):
         #Cache Validation outputs for Top - K
         self.val_outs = list()
         self.skip_outs = list()
+
+        #Define metrics
+        self.auroc_target = AUROC(task="multiclass", num_classes=vocab_size, ignore_index=0,thresholds= 5, average='weighted', validate_args=False)
+        self.auroc_skip = AUROC(task="multilabel", num_labels=max_seq_len, thresholds= 5, ignore_index=2, average='weighted', validate_args=False)
         
     def init_weights(self):
         initrange = 0.02
@@ -100,7 +105,8 @@ class VanillaTransformer(pl.LightningModule):
     def validation_step(self, valid_batch, batch_idx): 
         
         # Defining validation steps for our model
-        sessions, targets = self.get_val_batch(valid_batch) 
+        sessions, targets= self.get_val_batch(valid_batch[:-1])
+        skips = valid_batch[-1]
 
         output, skip = self.forward(sessions)
         #output = output.view(-1, self.vocab_size)
@@ -108,7 +114,15 @@ class VanillaTransformer(pl.LightningModule):
         output = output[range(output.shape[0]), idx, :]
 
         targets = targets.long()
+
+        #z = self.get_skip_one_hot(sessions, targets, skips)
+
         loss = self.loss(output, targets)
+
+        self.auroc_target(output, targets)
+
+        index = torch.Tensor(range(output.shape[0])).long().to(self.device).unsqueeze(dim=-1)
+        self.auroc_skip(output[index, torch.cat((sessions[:, :-1], targets.unsqueeze(dim=-1)), axis = 1)], skips.long())
 
         self.log("val_loss", loss.detach(), prog_bar=True, sync_dist=True)
         self.val_outs.append(self.test_top_k([(output.detach().cpu(), targets.detach().cpu())]))
@@ -117,7 +131,8 @@ class VanillaTransformer(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         # Defining validation steps for our model
-        sessions, targets = self.get_test_batch(batch) 
+        sessions, targets = self.get_test_batch(batch[:-1])
+        skips = batch[-1] 
 
         output, skip = self.forward(sessions)
         #output = output.view(-1, self.vocab_size)
@@ -125,7 +140,15 @@ class VanillaTransformer(pl.LightningModule):
         output = output[range(output.shape[0]), idx, :]
 
         targets = targets.long()
+        
+        #z = self.get_skip_one_hot(sessions, targets, skips)
+
         loss = self.loss(output, targets)
+
+        self.auroc_target(output, targets)
+        
+        index = torch.Tensor(range(output.shape[0])).long().to(self.device).unsqueeze(dim=-1)
+        self.auroc_skip(output[index, torch.cat((sessions[:, :-1], targets.unsqueeze(dim=-1)), axis = 1)], skips.long())
 
         self.log("test_loss", loss.detach(), prog_bar=True, sync_dist=True)
         self.val_outs.append(self.test_top_k([(output.detach().cpu(), targets.detach().cpu())]))
@@ -143,6 +166,13 @@ class VanillaTransformer(pl.LightningModule):
         last_target = test_batch[-1]
         return self.get_val_batch((*self.get_val_batch(test_batch[:-1]), last_target))
     
+    def get_skip_one_hot(self, sessions, targets, skip):
+        s = torch.cat((sessions[:, :-1], targets.unsqueeze(dim=-1)), axis = 1)
+        z = torch.ones((sessions.shape[0], self.vocab_size)).long().to(self.device) * 2
+        z[range(s.shape[0]), s.unsqueeze(dim=-1).long()] = skip.unsqueeze(dim=-1).long()
+        return z
+
+    
     def on_validation_epoch_end(self):
         #top_k = self.test_top_k(self.val_outs)
         top_k = {k_i: 0 for k_i in self.k}
@@ -156,6 +186,9 @@ class VanillaTransformer(pl.LightningModule):
 
         for k, v in top_k.items():
             self.log(k,v, prog_bar=True, sync_dist=True)
+        
+        self.log('Val AUROC Target', self.auroc_target,on_epoch=True)
+        self.log('Val AUROC Skip', self.auroc_skip,on_epoch=True)
 
         self.val_outs.clear()  # free memory
         self.skip_outs.clear()
@@ -173,6 +206,9 @@ class VanillaTransformer(pl.LightningModule):
 
         for k, v in top_k.items():
             self.log(k,v, prog_bar=True, sync_dist=True)
+        
+        self.log('Test AUROC Target', self.auroc_target ,on_epoch=True)
+        self.log('Test AUROC Skip', self.auroc_skip ,on_epoch=True)
 
         self.val_outs.clear()  # free memory
         self.skip_outs.clear()

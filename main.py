@@ -29,6 +29,7 @@ if __name__ == '__main__':
     args = parse_args()
     with open(args.config, 'r') as file:
         config = yaml.safe_load(file)
+
     
     print("Name of the current run (press ENTER for default):")
     exp_name = input()
@@ -70,11 +71,25 @@ if __name__ == '__main__':
     #topk_orig, total = model.test_top_k(output)
 
     #print({f'top-{k_i} HR': v / total for k_i, v in top_k.items()})
+    if config['data_params']['ckpt_path'] != '':
+        runner = Trainer(logger=tb_logger,
+                 callbacks=[
+                     LearningRateMonitor(),
+                     ModelCheckpoint(save_top_k=2, 
+                                     dirpath =config['data_params']['ckpt_path'], 
+                                     monitor= "val_loss",
+                                     save_last= True,
+                                     every_n_epochs=1),
+                 ],
+                 strategy=DDPStrategy(find_unused_parameters=False),
+                 **config['trainer_params'])
+        runner.test(model = model, ckpt_path=config['data_params']['ckpt_type'], dataloaders = data.test_dataloader())
+    
+    else:
+        try:
+            runner.fit(model, data.train_dataloader(), data.val_dataloader())
+            #train_dataloaders=data.train_dataloader(), val_dataloaders=data.val_dataloader()) #,
+        except KeyboardInterrupt:
+            pass
 
-    try:
-        runner.fit(model, data.train_dataloader(), data.val_dataloader())
-        #train_dataloaders=data.train_dataloader(), val_dataloaders=data.val_dataloader()) #,
-    except KeyboardInterrupt:
-        pass
-
-    runner.test(ckpt_path="best", dataloaders = data.test_dataloader())
+        runner.test(ckpt_path="best", dataloaders = data.test_dataloader())
