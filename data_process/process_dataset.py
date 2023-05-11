@@ -253,13 +253,13 @@ class SpotifyDataModule(pl.LightningDataModule):
         return train, val, test, vocab
     
     def train_dataloader(self):
-        return DataLoader(self.train_data, self.batch_size, num_workers = 4, shuffle=True, pin_memory = False)
+        return DataLoader(self.train_data, self.batch_size, num_workers = os.cpu_count(), shuffle=True, pin_memory = False)
     
     def val_dataloader(self):
-        return DataLoader(self.val_data, self.batch_size, num_workers = 4, pin_memory = False)
+        return DataLoader(self.val_data, self.batch_size, num_workers = os.cpu_count(), pin_memory = False)
 
     def test_dataloader(self):
-        return DataLoader(self.test_data, self.batch_size, num_workers= 4, pin_memory = False)
+        return DataLoader(self.test_data, self.batch_size, num_workers= os.cpu_count(), pin_memory = False)
 
 class DataSampler:
     def __init__(self, filepath, n=1e7,seed=1, path='Sampled_{}', 

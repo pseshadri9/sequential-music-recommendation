@@ -6,8 +6,9 @@ from tqdm import tqdm
 class VanillaTransformer(pl.LightningModule): 
     def __init__(self, max_seq_len = None, vocab_size = None, h_dim = None, 
                 lr = 0.005, nhead = 4, token_dim = None, dropout = 0.2, nEncoders = 1,
-                k = [1, 5, 10, 50, 100]):
+                k = [1, 5, 10, 50, 100], return_skip = False):
         super(VanillaTransformer, self).__init__()
+        self.save_hyperparameters()
           
         # Define model architecture
 
@@ -17,6 +18,7 @@ class VanillaTransformer(pl.LightningModule):
         self.k = k
         self.pe = torch.nn.Embedding(max_seq_len, token_dim)
         self.vocab = torch.nn.Embedding(vocab_size, token_dim, padding_idx=0)
+        self.return_skip = return_skip
 
         encoder_layers = torch.nn.TransformerEncoderLayer(token_dim, nhead, h_dim, dropout, batch_first=True)
         self.encoder = torch.nn.TransformerEncoder(encoder_layers, nEncoders)
@@ -26,7 +28,8 @@ class VanillaTransformer(pl.LightningModule):
         self.decoder_bias = torch.nn.parameter.Parameter(torch.randn(vocab_size)).to(self.device)
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
-        self.fc_skip = torch.nn.Linear(token_dim, self.max_seq_len)
+        if return_skip:
+            self.fc_skip = torch.nn.Linear(token_dim, self.max_seq_len)
 
         self.mask = self._generate_square_subsequent_mask(self.max_seq_len)
         
@@ -35,7 +38,8 @@ class VanillaTransformer(pl.LightningModule):
           
         # Define loss 
         self.loss = torch.nn.NLLLoss(ignore_index=0)
-        self.skip_loss = torch.nn.CrossEntropyLoss(ignore_index=2)
+        if self.return_skip:
+            self.skip_loss = torch.nn.CrossEntropyLoss(ignore_index=2)
 
         #Cache Validation outputs for Top - K
         self.val_outs = list()
@@ -59,7 +63,7 @@ class VanillaTransformer(pl.LightningModule):
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0)).to(self.device)
         return mask.bool()
 
-    def forward(self, x, return_skip = True):
+    def forward(self, x):
         if not self.mask is None:
             self.mask = self._generate_square_subsequent_mask(self.max_seq_len)
 
@@ -69,7 +73,7 @@ class VanillaTransformer(pl.LightningModule):
 
         enc_out = self.encoder(embs, self.mask)
 
-        return self.decode(enc_out), self.softmax(self.fc_skip(enc_out))
+        return (self.decode(enc_out), None) if not self.return_skip else (self.decode(enc_out), self.softmax(self.fc_skip(enc_out))) 
     
     def decode(self, x):
         output = torch.matmul(self.decoder(x), self.vocab.weight.transpose(0, 1)) + self.decoder_bias
@@ -91,9 +95,10 @@ class VanillaTransformer(pl.LightningModule):
         #output = output.view(-1, self.vocab_size)
         targets = targets.long()
         target_loss = self.loss(output, targets)
-        skip_loss = self.skip_loss(skip_pred, skip) 
+        if skip_pred:
+            skip_loss = self.skip_loss(skip_pred, skip) 
         
-        train_loss = target_loss + skip_loss
+        train_loss = target_loss #+ 0.1 * skip_loss
 
         self.log("train_loss", train_loss.detach(), prog_bar=True, sync_dist=True)
         #top_k, total = self.test_top_k([(output.detach().cpu(), targets.detach().cpu())], k = [5])

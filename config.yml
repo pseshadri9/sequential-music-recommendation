@@ -9,8 +9,9 @@ model_params:
 
 data_params:
   data_path: "/media/pavans/spotify/training_set/"
-  ckpt_path: ""
-  ckpt_type: ""
+  load_ckpt: False
+  ckpt_path: "/home/pavans/dev/sequential-music-recommendation/logger_runs/newAuroc/VanillaTinitial 200 epoch run /version_0/checkpoints"
+  ckpt_type: "/home/pavans/dev/sequential-music-recommendation/logger_runs/newAuroc/VanillaT: test checkpoint logic/version_2/checkpoints/epoch=0-step=1487.ckpt"
   batch_size: 128
   patch_size: 64
   num_workers: 4
@@ -21,7 +22,7 @@ exp_params:
   manual_seed: 1265
 
 trainer_params:
-  max_epochs: 200
+  max_epochs: 1
   accelerator: "gpu"
   devices: [0]
 
