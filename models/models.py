@@ -171,6 +171,13 @@ class VanillaTransformer(pl.LightningModule):
         last_target = test_batch[-1]
         return self.get_val_batch((*self.get_val_batch(test_batch[:-1]), last_target))
     
+    def get_negative_samples(self, a):
+        z = torch.linspace(0, self.vocab_size, self.vocab_size).long().to(self.device)
+        z[a.flatten()] = -1
+        z = z[z > 0]
+
+        return z[torch.randint(z.shape[0], a.shape)]
+
     def get_skip_one_hot(self, sessions, targets, skip):
         s = torch.cat((sessions[:, :-1], targets.unsqueeze(dim=-1)), axis = 1)
         z = torch.ones((sessions.shape[0], self.vocab_size)).long().to(self.device) * 2
