@@ -48,20 +48,23 @@ class InfoNCE(nn.Module):
         >>> output = loss(query, positive_key, negative_keys)
     """
 
-    def __init__(self, temperature=0.1, reduction='mean', negative_mode='unpaired'):
+    def __init__(self, temperature=0.1, reduction='mean', negative_mode='unpaired', ignore_index = 0):
         super().__init__()
         self.temperature = temperature
         self.reduction = reduction
         self.negative_mode = negative_mode
+        self.ignore_index = ignore_index
 
     def forward(self, query, positive_key, negative_keys=None):
         return info_nce(query, positive_key, negative_keys,
                         temperature=self.temperature,
                         reduction=self.reduction,
-                        negative_mode=self.negative_mode)
+                        negative_mode=self.negative_mode,
+                        ignore_index=self.ignore_index)
 
 
-def info_nce(query, positive_key, negative_keys=None, temperature=0.1, reduction='mean', negative_mode='unpaired'):
+def info_nce(query, positive_key, negative_keys=None, temperature=0.1, reduction='mean', negative_mode='unpaired',
+             ignore_index=0):
     # Check input dimensionality.
     if query.dim() != 2:
         raise ValueError('<query> must have 2 dimensions.')

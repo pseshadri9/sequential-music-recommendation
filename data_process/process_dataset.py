@@ -175,6 +175,9 @@ class SpotifyDataModule(pl.LightningDataModule):
         else:
             seq = self.zeropad([x - 1 if x != 0 else 0 for x in l], self.max_seq_len, padding_val=SKIP_PAD)
         return seq #+ [SKIP_PAD] if unidirectional else [SKIP_PAD] + seq
+    
+    def next_positive_hit(self, skip):
+        pass
 
     def load_csv(self, f):
         cols = ['session_position', 'track_id_clean', 'skip_level', 'session_id'] #+ ['skip_1', 'skip_2', 'skip_3']
@@ -185,7 +188,7 @@ class SpotifyDataModule(pl.LightningDataModule):
         df = df[cols]
 
         groups = df.groupby(['session_id'])
-        df = df.loc[(groups['skip_level'].transform('max') > 1) & (groups['session_id'].transform('size') > 5) 
+        df = df.loc[(groups['skip_level'].transform('max') > 1) & (groups['session_id'].transform('size') > 5) #& (groups['skip_level'].transform(lambda x: x[-3]) <2)
                     ,:].sort_values(by = ['session_id','session_position'], axis=0) #Do not consider sessions with no skips & (groups['skip_level'].transform(lambda x: max(*x[-3:])) <2)
         groups = df.groupby(['session_id'])
 

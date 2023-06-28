@@ -68,7 +68,7 @@ if __name__ == '__main__':
                                      save_last= True,
                                      every_n_epochs=1),
                  ],
-                 strategy=DDPStrategy(find_unused_parameters=False),
+                 strategy=DDPStrategy(find_unused_parameters=True),
                  limit_train_batches=0, limit_val_batches=0,
                  **config['trainer_params'])
         model = VanillaTransformer.load_from_checkpoint(config['data_params']['ckpt_type'])

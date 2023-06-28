@@ -6,6 +6,7 @@ model_params:
   nEncoders: 2
   dropout: 0.2
   k: [1, 5, 10, 50, 100]
+  return_skip: True
 
 data_params:
   data_path: "/media/pavans/spotify/training_set/"
