@@ -8,9 +8,25 @@ import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.utilities.seed import seed_everything
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, EarlyStopping
 from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.utilities.model_summary import ModelSummary
+
+
+def train(runner, dual_train=False):
+    if dual_train:
+        print('TRAINING EMBEDDINGS')
+        model.return_skip = False
+        runner.fit(model, data.train_dataloader(), data.val_dataloader())
+
+        model.return_skip = True
+        print('FINE TUNING NEGATIVE SAMPLES')
+        model.vocab.weight.requires_grad = False
+        runner.fit(model, data.train_dataloader(), data.val_dataloader())
+
+    else:
+        print("TRAINING FULL PASS")
+        runner.fit(model, data.train_dataloader(), data.val_dataloader())
 
 
 if __name__ == '__main__':
@@ -61,12 +77,13 @@ if __name__ == '__main__':
     if config['data_params']['load_ckpt']:
         runner = Trainer(logger=tb_logger,
                  callbacks=[
-                     LearningRateMonitor(),
-                     ModelCheckpoint(save_top_k=1,
+                    LearningRateMonitor(),
+                    ModelCheckpoint(save_top_k=1,
                                      dirpath =config['data_params']['ckpt_path'], 
                                      monitor= "val_loss",
                                      save_last= True,
                                      every_n_epochs=1),
+                    EarlyStopping(monitor='val_loss')
                  ],
                  strategy=DDPStrategy(find_unused_parameters=True),
                  limit_train_batches=0, limit_val_batches=0,
@@ -78,7 +95,8 @@ if __name__ == '__main__':
     
     else:
         try:
-            runner.fit(model, data.train_dataloader(), data.val_dataloader())
+            train(runner, dual_train=config['dual_train'])
+            #runner.fit(model, data.train_dataloader(), data.val_dataloader())
             #train_dataloaders=data.train_dataloader(), val_dataloaders=data.val_dataloader()) #,
         except KeyboardInterrupt:
             pass

@@ -44,8 +44,8 @@ class VanillaTransformer(pl.LightningModule):
         self.loss = torch.nn.NLLLoss(ignore_index=0)
         if self.return_skip:
             self.skip_loss = InfoNCE(negative_mode='paired') #torch.nn.CrossEntropyLoss(ignore_index=2)
-            self.sigma_target = torch.nn.parameter.Parameter(torch.rand(1)).to(self.device)
-            self.sigma_skip = torch.nn.parameter.Parameter(torch.rand(1)).to(self.device)
+            #self.sigma_target = torch.nn.parameter.Parameter(torch.rand(1)).to(self.device)
+            #self.sigma_skip = torch.nn.parameter.Parameter(torch.rand(1)).to(self.device)
 
         #Cache Validation outputs for Top - K
         self.val_outs = list()
@@ -100,17 +100,18 @@ class VanillaTransformer(pl.LightningModule):
 
         targets = targets.long()
 
-        target_loss = self.loss(output, targets)
-
         if not skip_pred is None:
             with torch.no_grad():
                 neg_targets, pos_query, pos_key = self.get_negative_samples(skip_pred, skip)
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
-            train_loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
-                + (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
+
+            train_loss = skip_loss
+            #train_loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
+                #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
         else:
-            train_loss = target_loss + skip_loss #+ 0.1 * skip_loss
+            target_loss = self.loss(output, targets)
+            train_loss = target_loss #+ skip_loss #+ 0.1 * skip_loss
 
         self.log("train_loss", train_loss.detach(), prog_bar=True, sync_dist=True)
 
@@ -147,8 +148,10 @@ class VanillaTransformer(pl.LightningModule):
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
 
-            loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
-                + (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
+            loss = skip_loss
+
+            #loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
+                #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
         else:
             loss = target_loss
 
@@ -189,8 +192,9 @@ class VanillaTransformer(pl.LightningModule):
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
 
-            loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
-                + (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
+            loss = skip_loss
+            #loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
+                #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
         else:
             loss = target_loss
 

@@ -8,6 +8,8 @@ model_params:
   k: [1, 5, 10, 50, 100]
   return_skip: True
 
+dual_train: True
+
 data_params:
   data_path: "/media/pavans/spotify/training_set/"
   load_ckpt: False
@@ -23,7 +25,7 @@ exp_params:
   manual_seed: 1265
 
 trainer_params:
-  max_epochs: 200
+  max_epochs: 50
   accelerator: "gpu"
   devices: [0]
 
