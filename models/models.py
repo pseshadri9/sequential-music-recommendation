@@ -31,6 +31,7 @@ class VanillaTransformer(pl.LightningModule):
         self.decoder_bias = torch.nn.parameter.Parameter(torch.randn(vocab_size)).to(self.device)
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
+
         if return_skip:
             self.fc_skip = None #torch.nn.Linear(token_dim, self.max_seq_len)
 
@@ -69,7 +70,7 @@ class VanillaTransformer(pl.LightningModule):
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0)).to(self.device)
         return mask.bool()
 
-    def forward(self, x):
+    def forward(self, x, val=False):
         if not self.mask is None:
             self.mask = self._generate_square_subsequent_mask(self.max_seq_len)
 
@@ -79,30 +80,31 @@ class VanillaTransformer(pl.LightningModule):
 
         enc_out = self.encoder(embs, self.mask)
 
-        return (self.decode(enc_out), None) if not self.return_skip else (self.decode(enc_out), enc_out) 
+        return self.decode(enc_out, val=val) #(self.decode(enc_out), None) if not self.return_skip else (self.decode(enc_out), enc_out) 
     
-    def decode(self, x):
-        output = torch.matmul(self.decoder(x), self.vocab.weight.transpose(0, 1)) + self.decoder_bias
+    def decode(self, x, val=False):
+        x_ = self.decoder(x)
+
+        if (self.return_skip) and (not val):
+            return x_
+        output = torch.matmul(x_, self.vocab.weight.transpose(0, 1)) + self.decoder_bias
         return self.softmax(output)
 
     def configure_optimizers(self):
         # Define and return the optimizer 
-        return torch.optim.Adam(self.parameters(), lr = self.lr)
+        return torch.optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr = self.lr)
     
-    def training_step(self, train_batch, batch_idx): 
+    def training_step(self, train_batch, batch_idx):
         
         # Defining training step for our model
         sessions, targets, skip = train_batch
         skip = skip.long()
-        output, skip_pred = self.forward(sessions)
-
-        output = output.transpose(1, 2)
+        output = self.forward(sessions)
 
         targets = targets.long()
 
-        if not skip_pred is None:
-            with torch.no_grad():
-                neg_targets, pos_query, pos_key = self.get_negative_samples(skip_pred, skip)
+        if self.return_skip:
+            neg_targets, pos_query, pos_key = self.get_negative_samples(output, skip)
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
 
@@ -110,41 +112,43 @@ class VanillaTransformer(pl.LightningModule):
             #train_loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
                 #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
         else:
+            output = output.transpose(1, 2)
             target_loss = self.loss(output, targets)
             train_loss = target_loss #+ skip_loss #+ 0.1 * skip_loss
 
         self.log("train_loss", train_loss.detach(), prog_bar=True, sync_dist=True)
 
         if self.return_skip:
-            self.log("target_loss", target_loss.detach(), prog_bar=True, sync_dist=True)
+            try:
+                self.log("target_loss", target_loss.detach(), prog_bar=True, sync_dist=True)
+            except:
+                pass
             self.log("skip_loss", skip_loss.detach(), prog_bar=True, sync_dist=True)
 
-            self.log("target_weight", (1/(2 * self.sigma_target ** 2)).detach(), prog_bar=True, sync_dist=True)
-            self.log("skip_weight", (1/(self.sigma_skip ** 2)).detach(), prog_bar=True, sync_dist=True)
+            #self.log("target_weight", (1/(2 * self.sigma_target ** 2)).detach(), prog_bar=True, sync_dist=True)
+            #self.log("skip_weight", (1/(self.sigma_skip ** 2)).detach(), prog_bar=True, sync_dist=True)
         #top_k, total = self.test_top_k([(output.detach().cpu(), targets.detach().cpu())], k = [5])
         #self.log_dict({f'top-{k_i} HR': v / total for k_i, v in top_k.items()})
         
         return train_loss
 
     
-    def validation_step(self, valid_batch, batch_idx): 
-        
+    def validation_step(self, valid_batch, batch_idx):
         # Defining validation steps for our model
         sessions, targets= self.get_val_batch(valid_batch[:-1])
         skips = valid_batch[-1].long()
 
-        output, skip_pred = self.forward(sessions)
+        output_ = self.forward(sessions)
+        output = self.forward(sessions.detach().clone(), val=True)
         #output = output.view(-1, self.vocab_size)
-        idx = torch.argmin(sessions, dim=1) - 1
+        idx = torch.argmin(sessions, dim=1) - 1       
         output = output[range(output.shape[0]), idx, :]
 
         targets = targets.long()
 
-        target_loss = self.loss(output, targets)
 
-        if not skip_pred is None:
-            with torch.no_grad():
-                neg_targets, pos_query, pos_key = self.get_negative_samples(skip_pred, skips)
+        if self.return_skip:
+            neg_targets, pos_query, pos_key = self.get_negative_samples(output_, skips)
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
 
@@ -153,6 +157,7 @@ class VanillaTransformer(pl.LightningModule):
             #loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
                 #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
         else:
+            target_loss = self.loss(output, targets)
             loss = target_loss
 
 
@@ -165,7 +170,7 @@ class VanillaTransformer(pl.LightningModule):
         self.val_outs.append(self.test_top_k([(output.detach().cpu(), targets.detach().cpu())]))
 
         if self.return_skip:
-            self.log("val target_loss", target_loss.detach(), prog_bar=True, sync_dist=True)
+            #self.log("val target_loss", target_loss.detach(), prog_bar=True, sync_dist=True)
             self.log("val skip_loss", skip_loss.detach(), prog_bar=True, sync_dist=True)
         
         return loss
@@ -173,22 +178,23 @@ class VanillaTransformer(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         # Defining validation steps for our model
         sessions, targets = self.get_test_batch(batch[:-1])
-        skips = batch[-1] 
+        skips = batch[-1]
 
-        output, skip_pred = self.forward(sessions)
+        output = self.forward(sessions, val=True)
+        output_ = self.forward(sessions.detach().clone())
         #output = output.view(-1, self.vocab_size)
+
         idx = torch.argmin(sessions, dim=1) - 1
         output = output[range(output.shape[0]), idx, :]
+
 
         targets = targets.long()
         
         #z = self.get_skip_one_hot(sessions, targets, skips)
 
-        target_loss = self.loss(output, targets)
 
-        if not skip_pred is None:
-            with torch.no_grad():
-                neg_targets, pos_query, pos_key = self.get_negative_samples(skip_pred, skips)
+        if self.return_skip:
+            neg_targets, pos_query, pos_key = self.get_negative_samples(output_, skips)
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
 
@@ -196,6 +202,7 @@ class VanillaTransformer(pl.LightningModule):
             #loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
                 #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
         else:
+            target_loss = self.loss(output, targets)
             loss = target_loss
 
         self.auroc_target(output, targets)
@@ -280,8 +287,8 @@ class VanillaTransformer(pl.LightningModule):
         for k, v in top_k.items():
             self.log(k,v, prog_bar=True, sync_dist=True)
         
-        self.log('Val AUROC Target', self.auroc_target,on_epoch=True)
-        self.log('Val AUROC Skip', self.auroc_skip,on_epoch=True)
+        self.log('Val AUROC Target', self.auroc_target, on_epoch=True)
+        self.log('Val AUROC Skip', self.auroc_skip, on_epoch=True)
 
         self.val_outs.clear()  # free memory
         self.skip_outs.clear()
@@ -300,8 +307,8 @@ class VanillaTransformer(pl.LightningModule):
         for k, v in top_k.items():
             self.log(k,v, prog_bar=True, sync_dist=True)
         
-        self.log('Test AUROC Target', self.auroc_target ,on_epoch=True)
-        self.log('Test AUROC Skip', self.auroc_skip ,on_epoch=True)
+        self.log('Test AUROC Target', self.auroc_target, on_epoch=True)
+        self.log('Test AUROC Skip', self.auroc_skip, on_epoch=True)
 
         self.val_outs.clear()  # free memory
         self.skip_outs.clear()

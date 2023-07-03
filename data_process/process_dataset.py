@@ -96,7 +96,7 @@ class LfMDataModule(pl.LightningDataModule):
         self.test_data = self.prepare_data(pd.read_csv(self.filepath + dirs[TEST]))
 
 class SpotifyDataModule(pl.LightningDataModule):
-    def __init__(self, filepath, batch_size, max_seq_len=20, preprocess=None):
+    def __init__(self, filepath, batch_size, max_seq_len=20, preprocess=None, dev=False):
         super().__init__()
           
         self.filepath = filepath
@@ -104,6 +104,7 @@ class SpotifyDataModule(pl.LightningDataModule):
           
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
+        self.dev = dev
 
         self.setup()
     
@@ -129,6 +130,11 @@ class SpotifyDataModule(pl.LightningDataModule):
             if total_interactions > 2000000: #stop when 10M sessions are sampled
                 break
         
+        if self.dev:
+            sessions = sessions[:1000]
+            skips = skips[:1000]
+            session_ids = session_ids[:1000]
+
         return self.preprocess_data(sessions, skips, vocab, session_ids)
     
     def preprocess_data(self, sessions, skips, vocab, session_ids):
