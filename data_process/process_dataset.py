@@ -29,7 +29,7 @@ FILE_EXT = '.csv'
 #Reserved Sequence Tokens
 PAD = 0
 CLS = 1
-MSK = 3
+MSK = 2
 
 NUM_RESERVED_TOKENS = 3
 

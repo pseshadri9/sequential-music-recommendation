@@ -1,6 +1,7 @@
 import pytorch_lightning as pl
 import torch
 from torchmetrics import AUROC
+from torchmetrics.retrieval import RetrievalMAP
 from tqdm import tqdm
 
 from utility import InfoNCE
@@ -28,7 +29,7 @@ class VanillaTransformer(pl.LightningModule):
 
         #self.decoder = torch.nn.Sequential(torch.nn.Linear(h_dim, vocab_size), torch.nn.LogSoftmax(dim=-1))
         self.decoder = torch.nn.Sequential(torch.nn.Linear(h_dim, token_dim), torch.nn.GELU())
-        self.decoder_bias = torch.nn.parameter.Parameter(torch.randn(vocab_size)).to(self.device)
+        #self.decoder_bias = torch.nn.parameter.Parameter(torch.randn(vocab_size)).to(self.device)
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
 
@@ -41,8 +42,8 @@ class VanillaTransformer(pl.LightningModule):
         self.lr = lr
           
         # Define loss 
-        #self.loss = torch.nn.CrossEntropyLoss(ignore_index=0)
-        self.loss = torch.nn.NLLLoss(ignore_index=0)
+        self.loss = torch.nn.CrossEntropyLoss(ignore_index=0)
+        #self.loss = torch.nn.NLLLoss(ignore_index=0)
         if self.return_skip:
             self.skip_loss = InfoNCE(negative_mode='paired') #torch.nn.CrossEntropyLoss(ignore_index=2)
             #self.sigma_target = torch.nn.parameter.Parameter(torch.rand(1)).to(self.device)
@@ -55,7 +56,9 @@ class VanillaTransformer(pl.LightningModule):
         #Define metrics
         self.auroc_target = AUROC(task="multiclass", num_classes=vocab_size, ignore_index=0,thresholds= 5, average='weighted', validate_args=False)
         self.auroc_skip = AUROC(task="multilabel", num_labels=max_seq_len, thresholds= 5, ignore_index=2, average='weighted', validate_args=False)
-        
+        self.MAP = RetrievalMAP(top_k=100)
+        self.MAP_outs = list()
+
     def init_weights(self):
         initrange = 0.02
         nn.init.trunc_normal_(self.encoder.weight, a=-initrange, b=initrange)
@@ -69,51 +72,73 @@ class VanillaTransformer(pl.LightningModule):
         mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0)).to(self.device)
         return mask.bool()
+    
+    def sampled_softmax(self, X, y, num=1000):
+        observed_tracks, indices = torch.unique(y, return_inverse=True)
+        
+        tracks = torch.linspace(0,self.vocab_size - 1, self.vocab_size).int().to(self.device)
 
-    def forward(self, x, val=False):
+        tracks[observed_tracks] = 0
+
+        idx = torch.randperm(self.vocab_size - observed_tracks.shape[0]).to(self.device)
+
+        negative_samples = tracks[tracks != 0][idx[:num]]
+
+        return self.softmax(torch.cat((X[:, :, observed_tracks], X[:, :, negative_samples]), axis=2)), indices
+    
+    def _mask_unseen_tracks(self, y, num=1000):
+        pass
+
+
+    def forward(self, x):
         if not self.mask is None:
             self.mask = self._generate_square_subsequent_mask(self.max_seq_len)
 
-        embs = torch.cat((self.vocab(x[:,:-1]), torch.ones((x.shape[0], 1, self.token_dim)).to(self.device)), axis=1) #N, 20, token_dim, append CLS token embedding
+        #embs = torch.cat((self.vocab(x[:,:-1]), torch.ones((x.shape[0], 1, self.token_dim)).to(self.device)), axis=1) #N, 20, token_dim, append CLS token embedding
+        embs = self.vocab(x)
 
-        embs = self.pe(torch.linspace(0,self.max_seq_len - 1, 1).int().to(self.device)) + embs
+        embs = self.pe(torch.linspace(0,self.max_seq_len - 1, self.max_seq_len).int().to(self.device)) + embs
 
         enc_out = self.encoder(embs, self.mask)
 
-        return self.decode(enc_out, val=val) #(self.decode(enc_out), None) if not self.return_skip else (self.decode(enc_out), enc_out) 
+        return self.decode(enc_out) #(self.decode(enc_out), None) if not self.return_skip else (self.decode(enc_out), enc_out) 
     
-    def decode(self, x, val=False):
+    def decode(self, x):
         x_ = self.decoder(x)
-
-        if (self.return_skip) and (not val):
-            return x_
-        output = torch.matmul(x_, self.vocab.weight.transpose(0, 1)) + self.decoder_bias
-        return self.softmax(output)
+        output = torch.matmul(x_, self.vocab.weight.transpose(0, 1)) #+ self.decoder_bias
+        return output, x_
 
     def configure_optimizers(self):
         # Define and return the optimizer 
         return torch.optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr = self.lr)
     
     def training_step(self, train_batch, batch_idx):
-        
+
         # Defining training step for our model
         sessions, targets, skip = train_batch
         skip = skip.long()
-        output = self.forward(sessions)
+        output, x_ = self.forward(sessions)
 
         targets = targets.long()
 
+        output, targets = self.sampled_softmax(output, targets)
+
+
+        output = output.transpose(1, 2)
+        
+        #closest_samples = self._closest_pos_sample(x_, skip).long()
+        #targets[:, :-1] = closest_samples[:, :-1]
+        target_loss = self.loss(output, targets)
+
         if self.return_skip:
-            neg_targets, pos_query, pos_key = self.get_negative_samples(output, skip)
+            neg_targets, pos_query, pos_key = self.get_negative_samples(x_, skip, sessions=sessions)
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
 
-            train_loss = skip_loss
+            train_loss = skip_loss + target_loss
             #train_loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
                 #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
         else:
-            output = output.transpose(1, 2)
-            target_loss = self.loss(output, targets)
             train_loss = target_loss #+ skip_loss #+ 0.1 * skip_loss
 
         self.log("train_loss", train_loss.detach(), prog_bar=True, sync_dist=True)
@@ -135,33 +160,35 @@ class VanillaTransformer(pl.LightningModule):
     
     def validation_step(self, valid_batch, batch_idx):
         # Defining validation steps for our model
-        sessions, targets= self.get_val_batch(valid_batch[:-1])
+        sessions, targets = self.get_val_batch(valid_batch[:-1])
         skips = valid_batch[-1].long()
 
-        output_ = self.forward(sessions)
-        output = self.forward(sessions.detach().clone(), val=True)
+        output, x_ = self.forward(sessions)
+        output = self.softmax(output)
+        targets = targets.long()
+
+        #output, targets = self.sampled_softmax(output, targets.contiguous())
         #output = output.view(-1, self.vocab_size)
         idx = torch.argmin(sessions, dim=1) - 1       
         output = output[range(output.shape[0]), idx, :]
 
-        targets = targets.long()
 
-
+        target_loss = self.loss(output, targets)
         if self.return_skip:
-            neg_targets, pos_query, pos_key = self.get_negative_samples(output_, skips)
+            neg_targets, pos_query, pos_key = self.get_negative_samples(x_, skips)
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
 
-            loss = skip_loss
+            loss = skip_loss + target_loss
 
             #loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
                 #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
         else:
-            target_loss = self.loss(output, targets)
             loss = target_loss
 
 
         self.auroc_target(output, targets)
+        #self.compute_MAP(output.detach(), sessions.detach(), skips.detach())
 
         index = torch.Tensor(range(output.shape[0])).long().to(self.device).unsqueeze(dim=-1)
         self.auroc_skip(output[index, torch.cat((sessions[:, :-1], targets.unsqueeze(dim=-1)), axis = 1)], skips.long())
@@ -170,42 +197,64 @@ class VanillaTransformer(pl.LightningModule):
         self.val_outs.append(self.test_top_k([(output.detach().cpu(), targets.detach().cpu())]))
 
         if self.return_skip:
-            #self.log("val target_loss", target_loss.detach(), prog_bar=True, sync_dist=True)
+            self.log("val target_loss", target_loss.detach(), prog_bar=True, sync_dist=True)
             self.log("val skip_loss", skip_loss.detach(), prog_bar=True, sync_dist=True)
         
         return loss
+
+    def compute_MAP(self, preds, sessions, skips):
+        with torch.no_grad():
+            sessions[skips != 1] = 0
+            tgt_skip = torch.zeros_like(preds).to(self.device)
+            tgt_skip[:, sessions] = 1
+            idx = torch.arange(sessions.shape[0]).unsqueeze(dim=-1).tile(1, preds.shape[1]).long().to(self.device)
+            self.MAP_outs.append((self.MAP(preds, tgt_skip.bool(), indexes=idx).detach().cpu().item(), preds.shape[0]))
+    
+    def MAP_val(self):
+        res = 0
+        tot = 0
+        for map, bs in self.MAP_outs:
+            res += map * bs
+            tot += bs
+        
+        self.MAP_outs.clear()
+        return res / tot
+
+
+
 
     def test_step(self, batch, batch_idx):
         # Defining validation steps for our model
         sessions, targets = self.get_test_batch(batch[:-1])
         skips = batch[-1]
 
-        output = self.forward(sessions, val=True)
-        output_ = self.forward(sessions.detach().clone())
+        output, x_ = self.forward(sessions, )
         #output = output.view(-1, self.vocab_size)
+        targets = targets.long()
+        output = self.softmax(output)
+        #output, targets = self.sampled_softmax(output, targets)
 
         idx = torch.argmin(sessions, dim=1) - 1
         output = output[range(output.shape[0]), idx, :]
 
-
-        targets = targets.long()
         
         #z = self.get_skip_one_hot(sessions, targets, skips)
-
+        target_loss = self.loss(output, targets)
 
         if self.return_skip:
-            neg_targets, pos_query, pos_key = self.get_negative_samples(output_, skips)
+            neg_targets, pos_query, pos_key = self.get_negative_samples(x_, skips)
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
 
-            loss = skip_loss
+            loss = skip_loss + target_loss
             #loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
                 #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
         else:
-            target_loss = self.loss(output, targets)
+            
             loss = target_loss
 
         self.auroc_target(output, targets)
+        #self.compute_MAP(output.detach(), sessions.detach(), skips.detach())
         
         index = torch.Tensor(range(output.shape[0])).long().to(self.device).unsqueeze(dim=-1)
         self.auroc_skip(output[index, torch.cat((sessions[:, :-1], targets.unsqueeze(dim=-1)), axis = 1)], skips.long())
@@ -230,20 +279,24 @@ class VanillaTransformer(pl.LightningModule):
         last_target = test_batch[-1]
         return self.get_val_batch((*self.get_val_batch(test_batch[:-1]), last_target))
     
-    def get_negative_samples(self, a, skip):
+    def get_negative_samples(self, a, skip, sessions=None):
+        if sessions is None:
+            keys = a
+        else:
+            keys = self.vocab(sessions)
         neg_mask = skip == 1
         pos_mask = skip == 0
 
         n = torch.zeros_like(a)
-        n[neg_mask] = a[neg_mask]
+        n[neg_mask] = keys[neg_mask]
         
         p = torch.zeros_like(a)
         p_key = torch.zeros_like(a)
         
         #ignore last sample which does not have a closest positive sample
-        p_key[:, :-1][pos_mask[:, :-1]] = a[torch.arange(a.shape[0]).unsqueeze(-1),
+        p_key[:, :-1][pos_mask[:, :-1]] = keys[torch.arange(a.shape[0]).unsqueeze(-1),
                                     self._closest_pos_sample(a, skip)][:, :-1][pos_mask[:, :-1]]
-        p[:, :-1][pos_mask[:, :-1]] = a[:, :-1][pos_mask[:, :-1]]
+        p[:, :-1][pos_mask[:, :-1]] = keys[:, :-1][pos_mask[:, :-1]]
                                                                         
         return n.tile(self.max_seq_len, 1, 1), p.view(-1, *p.shape[2:]), p_key.view(-1, *p_key.shape[2:])
     
@@ -289,6 +342,7 @@ class VanillaTransformer(pl.LightningModule):
         
         self.log('Val AUROC Target', self.auroc_target, on_epoch=True)
         self.log('Val AUROC Skip', self.auroc_skip, on_epoch=True)
+        #self.log('Val Skip MAP', self.MAP_val(), on_epoch=True)
 
         self.val_outs.clear()  # free memory
         self.skip_outs.clear()
@@ -309,6 +363,7 @@ class VanillaTransformer(pl.LightningModule):
         
         self.log('Test AUROC Target', self.auroc_target, on_epoch=True)
         self.log('Test AUROC Skip', self.auroc_skip, on_epoch=True)
+        #self.log('Test Skip MAP', self.MAP_val(), on_epoch=True)
 
         self.val_outs.clear()  # free memory
         self.skip_outs.clear()

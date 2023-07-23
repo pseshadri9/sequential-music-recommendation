@@ -1,14 +1,14 @@
 model_params:
   max_seq_len: 20
-  h_dim: 64
-  nhead : 2
-  token_dim: 64
+  h_dim: 128
+  nhead : 8
+  token_dim: 128
   nEncoders: 2
   dropout: 0.2
-  k: [1, 5, 10, 50, 100]
-  return_skip: True
+  k: [1, 5, 10, 20, 50, 100]
+  return_skip: False
 
-dual_train: True
+dual_train: False
 dev: False
 
 data_params:
@@ -26,7 +26,7 @@ exp_params:
   manual_seed: 1265
 
 trainer_params:
-  max_epochs: 35
+  max_epochs: 25
   accelerator: "gpu"
   devices: [0]
 

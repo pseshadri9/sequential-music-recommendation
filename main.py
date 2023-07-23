@@ -25,7 +25,7 @@ def train(runner, model, dual_train=False, config=None):
         model.return_skip = True
         print('FINE TUNING NEGATIVE SAMPLES')
         model.vocab.weight.requires_grad = False
-        model.decoder_bias.requires_grad = False
+        #model.decoder_bias.requires_grad = False
         #runner.fit_loop.max_epochs= config['trainer_params']['max_epochs'] * 2
         runner, _ , _ = get_trainer(config)
         runner.fit(model, data.train_dataloader(), data.val_dataloader())
@@ -70,7 +70,7 @@ if __name__ == '__main__':
     seed_everything(config['exp_params']['manual_seed'])
     torch.set_float32_matmul_precision('high')
     torch.cuda.empty_cache()
-    start_time = datetime.datetime.now().strftime(format="%d_%m_%Y__%H_%M_%S")
+    start_time, start_datetime = datetime.datetime.now().strftime(format="%d_%m_%Y__%H_%M_%S"), datetime.datetime.now()
     print(f'Run started at {start_time} with args:\n\n{config}\n')
 
     #seed_everything(config['exp_params']['manual_seed'], True)
@@ -119,3 +119,5 @@ if __name__ == '__main__':
             pass
 
         runner.test(ckpt_path="best", dataloaders = data.test_dataloader())
+    
+    print('TIME ELAPSED: ',round((datetime.datetime.now() - start_datetime).total_seconds() / 3600, 2), 'HOURS')
