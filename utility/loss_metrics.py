@@ -8,6 +8,9 @@ __all__ = ['InfoNCE', 'info_nce']
 
 class InfoNCE(nn.Module):
     """
+    The following implementation is adapted from: https://github.com/RElbers/info-nce-pytorch
+
+    
     Calculates the InfoNCE loss for self-supervised learning.
     This contrastive loss enforces the embeddings of similar (positive) samples to be close
         and those of different (negative) samples to be distant.
