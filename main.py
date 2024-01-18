@@ -52,6 +52,7 @@ def get_trainer(config, ckpt_path = None):
                      LearningRateMonitor(),
                      checkpoint_callback,
                  ],
+                 gradient_clip_val=5,
                  #strategy=DDPStrategy(find_unused_parameters=False),
                  **config['trainer_params'])
     return runner, tb_logger, checkpoint_callback
@@ -64,6 +65,8 @@ if __name__ == '__main__':
     print("Name of the current run (press ENTER for default):")
     if config['dev']:
         exp_name = 'dev'
+        #config['trainer_params']['accelerator'] = 'cpu'
+        #del config['trainer_params']['devices']
     else:
         exp_name = input()
     #torch.manual_seed(config['exp_params']['manual_seed'])

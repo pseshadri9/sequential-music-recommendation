@@ -10,6 +10,7 @@ import pandas as pd
 import ast
 from data_process import constants
 from tqdm import tqdm
+from .constants import PADDING_ITEM, CLS_ITEM, MASKING_ITEM
 
 torch.manual_seed(0)
 r = Random(0)
@@ -27,9 +28,9 @@ COLUMNS = [SEQUENCE, NEXT_TOKEN, USER_ID, SKIP]
 FILE_EXT = '.csv'
 
 #Reserved Sequence Tokens
-PAD = 0
-CLS = 1
-MSK = 2
+PAD = PADDING_ITEM
+CLS = CLS_ITEM
+MSK = MASKING_ITEM
 
 NUM_RESERVED_TOKENS = 3
 

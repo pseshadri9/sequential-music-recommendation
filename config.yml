@@ -6,7 +6,9 @@ model_params:
   nEncoders: 2
   dropout: 0.2
   k: [1, 5, 10, 20, 50, 100]
-  return_skip: False
+  return_skip: True
+  lr: 0.005
+  bidirectional: True
 
 dual_train: False
 dev: False
@@ -22,11 +24,10 @@ data_params:
 
 
 exp_params:
-  lr: 0.001
   manual_seed: 1265
 
 trainer_params:
-  max_epochs: 25
+  max_epochs: 40
   accelerator: "gpu"
   devices: [0]
 
