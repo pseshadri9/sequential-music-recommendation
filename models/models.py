@@ -47,7 +47,7 @@ class VanillaTransformer(pl.LightningModule):
         self.loss = torch.nn.CrossEntropyLoss(ignore_index=0)
         #self.loss = torch.nn.NLLLoss(ignore_index=0)
         if self.return_skip:
-            self.skip_loss = InfoNCE(negative_mode='paired') #torch.nn.CrossEntropyLoss(ignore_index=2)
+            self.skip_loss = InfoNCE(negative_mode='paired', ignore_index=PADDING_ITEM) #torch.nn.CrossEntropyLoss(ignore_index=2)
             #self.sigma_target = torch.nn.parameter.Parameter(torch.rand(1)).to(self.device)
             #self.sigma_skip = torch.nn.parameter.Parameter(torch.rand(1)).to(self.device)
         
@@ -64,7 +64,7 @@ class VanillaTransformer(pl.LightningModule):
         #Define metrics
         self.auroc_target = AUROC(task="multiclass", num_classes=vocab_size, ignore_index=0,thresholds= 5, average='weighted', validate_args=False)
         self.auroc_skip = AUROC(task="multilabel", num_labels=max_seq_len, thresholds= 5, ignore_index=2, average='weighted', validate_args=False)
-        self.MAP = RetrievalMAP(top_k=100, ignore_index=PADDING_ITEM)
+        self.MAP = RetrievalMAP(top_k=10)
         self.MAP_outs = list()
 
     def init_weights(self):
@@ -245,7 +245,10 @@ class VanillaTransformer(pl.LightningModule):
         else:
             loss = target_loss
 
-
+        indexes = torch.arange(output.shape[0]).unsqueeze(dim=1).tile((output.shape[1]))
+        MAP_target = torch.zeros_like(indexes).bool()
+        MAP_target[range(targets.shape[0]), targets] = True
+        self.MAP.update(output.detach().cpu(), MAP_target.detach().cpu(), indexes=indexes.detach().cpu())
         #self.auroc_target(output, targets)
         #self.compute_MAP(output.detach(), targets.detach(), skips.detach())
 
@@ -325,6 +328,11 @@ class VanillaTransformer(pl.LightningModule):
         
         index = torch.Tensor(range(output.shape[0])).long().to(self.device).unsqueeze(dim=-1)
         #self.auroc_skip(output[index, torch.cat((sessions[:, :-1], targets.unsqueeze(dim=-1)), axis = 1)], skips.long())
+        indexes = torch.arange(output.shape[0]).unsqueeze(dim=1).tile((output.shape[1]))
+        MAP_target = torch.zeros_like(indexes).bool()
+        MAP_target[range(targets.shape[0]), targets] = True
+        self.MAP.update(output.detach().cpu(), MAP_target.detach().cpu(), indexes=indexes.detach().cpu())
+
 
         self.log("test_loss", loss.detach(), prog_bar=True, sync_dist=True)
         self.val_outs.append(self.test_top_k([(output.detach().cpu(), targets.detach().cpu())]))
@@ -361,7 +369,7 @@ class VanillaTransformer(pl.LightningModule):
         p = torch.zeros_like(a)
         p_key = torch.zeros_like(a)
         
-        #ignore last sample which does not have a closest positive sample
+        #ignore last item which does not have a closest positive sample
         p_key[:, :-1][pos_mask[:, :-1]] = keys[torch.arange(a.shape[0]).unsqueeze(-1),
                                     self._closest_pos_sample(a, skip)][:, :-1][pos_mask[:, :-1]]
         p[:, :-1][pos_mask[:, :-1]] = a[:, :-1][pos_mask[:, :-1]]
@@ -412,7 +420,8 @@ class VanillaTransformer(pl.LightningModule):
         
         #self.log('Val AUROC Target', self.auroc_target, on_epoch=True)
         #self.log('Val AUROC Skip', self.auroc_skip, on_epoch=True)
-        #self.log('Val Skip MAP', self.MAP_val(), on_epoch=True)
+        self.log('Val MAP', self.MAP.compute().item(), on_epoch=True)
+        self.MAP.reset()
 
         self.val_outs.clear()  # free memory
         self.skip_outs.clear()
@@ -433,7 +442,8 @@ class VanillaTransformer(pl.LightningModule):
         
         #self.log('Test AUROC Target', self.auroc_target, on_epoch=True)
         #self.log('Test AUROC Skip', self.auroc_skip, on_epoch=True)
-        #self.log('Test Skip MAP', self.MAP_val(), on_epoch=True)
+        self.log('Test MAP', self.MAP.compute().item(), on_epoch=True)
+        self.MAP.reset()
 
         self.val_outs.clear()  # free memory
         self.skip_outs.clear()

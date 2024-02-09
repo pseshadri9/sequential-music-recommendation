@@ -6,19 +6,19 @@ model_params:
   nEncoders: 2
   dropout: 0.2
   k: [1, 5, 10, 20]
-  return_skip: False
+  return_skip: True
   lr: 0.005
-  bidirectional: False
+  bidirectional: True
 
 dual_train: False
 dev: False
 
 data_params:
-  data_path: "/media/pavans/spotify/training_set/"
+  data_path: "/home/pavans/dev/sequential-music-recommendation/datasets/lfm/plays_with_session_with_skip_2.csv"
   load_ckpt: False
   ckpt_path: "/home/pavans/dev/sequential-music-recommendation/logger_runs/newAuroc/VanillaTinitial 200 epoch run /version_0/checkpoints"
   ckpt_type: "/home/pavans/dev/sequential-music-recommendation/logger_runs/newAuroc/VanillaT: test checkpoint logic/version_2/checkpoints/epoch=0-step=1487.ckpt"
-  batch_size: 64 #128
+  batch_size: 128
   patch_size: 64
   num_workers: 4
 
@@ -27,10 +27,10 @@ exp_params:
   manual_seed: 1265
 
 trainer_params:
-  max_epochs: 15
+  max_epochs: 10
   accelerator: "gpu"
   devices: [0]
 
 logging_params:
-  save_dir: "logger_runs/newAuroc/"
+  save_dir: "logger_runs/LFM/"
   name: 'VanillaT'

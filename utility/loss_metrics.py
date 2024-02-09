@@ -5,6 +5,72 @@ from torch import nn
 
 __all__ = ['InfoNCE', 'info_nce']
 
+class SkipContrastiveLoss(nn.Module):
+    def __init__(self, ignore_index = 0):
+        super().__init__()
+        self.CE = InfoNCE(negative_mode='paired', ignore_index=ignore_index)
+        self.ignore_index = ignore_index
+    
+    def forward(self, x_, skips, sessions):
+        neg_targets, pos_query, pos_key = self.get_negative_samples(x_, skips, sessions=sessions)
+        return self.CE(pos_query, pos_key, negative_keys=neg_targets)
+    
+    def get_negative_samples(self, a, skip, sessions=None):
+        '''
+        retrieves negative sample embeddings for each track in each session. 
+        
+        params:
+            a: batch of listening sessions with track embedding, shape: [N, h_dim, session_length]
+            skip: skip labels for each session, shape: [N, session_length]
+            sessions: 
+        
+        '''
+        if sessions is None:
+            keys = a
+        else:
+            keys = self.vocab(sessions)
+        neg_mask = skip == 1
+        pos_mask = skip == 0
+
+
+        n = torch.zeros_like(a)
+        n[neg_mask] = keys[neg_mask]
+        
+        p = torch.zeros_like(a)
+        p_key = torch.zeros_like(a)
+        
+        #ignore last sample which does not have a closest positive sample
+        p_key[:, :-1][pos_mask[:, :-1]] = keys[torch.arange(a.shape[0]).unsqueeze(-1),
+                                    self._closest_pos_sample(a, skip)][:, :-1][pos_mask[:, :-1]]
+        p[:, :-1][pos_mask[:, :-1]] = a[:, :-1][pos_mask[:, :-1]]
+
+        n_size = self.max_seq_len - 1 if self.bidirectional else self.max_seq_len
+                                                                        
+        return n.tile(n_size, 1, 1), p.view(-1, *p.shape[2:]), p_key.view(-1, *p_key.shape[2:])
+    
+    def _closest_pos_sample(self, a, skip):
+        '''
+        vectorized implementation to compute the closest positive sample for each track in each batch
+
+        params:
+            a: batch of sessions with track embeddings [N, embedding_dim, session_length]
+        '''
+        m = torch.iinfo(skip.dtype).max
+
+        z = torch.linspace(0, a.shape[1] - 1, a.shape[1]).unsqueeze(dim=-1)
+        z = z.tile((a.shape[0],)).transpose(0, 1)
+
+        b = z.detach().clone().unsqueeze(dim=-1)
+
+        z[skip != 0] = m
+
+        z = z.unsqueeze(dim=-1).tile((1, 1, a.shape[1])).transpose(1, 2)
+
+        diff = (z - b)
+
+        diff[diff <= 0] = m
+
+        return diff.argmin(dim=2)
 
 class InfoNCE(nn.Module):
     """

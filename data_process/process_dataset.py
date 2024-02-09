@@ -48,54 +48,6 @@ class TensorDataset(Dataset):
         return 
 '''
 
-class LfMDataModule(pl.LightningDataModule):
-    def __init__(self, filepath, batch_size):
-        super().__init__()
-          
-        self.filepath = filepath
-          
-        self.batch_size = batch_size
-
-        self.setup()
-  
-    def prepare_data(self, data):
-        data.st = data.st.apply(lambda x: ast.literal_eval(x))
-        data.skip = data.skip.apply(lambda x: ast.literal_eval(x))
-        st = []
-        u_ids = []
-        for st_it in data.st:
-            u_ids.append(st_it[0])
-            st_ = self.__class__._add_special_tokens(st_it[1:])
-            st.append(st_)
-
-        dataset = TensorDataset(torch.tensor(st),
-                                torch.tensor(u_ids),
-                                torch.tensor(data.lst.tolist()),
-                                torch.tensor(data.a.tolist()),
-                                torch.tensor(data.buy.tolist()),
-                                torch.tensor(data.skip.tolist()))
-        return DataLoader(dataset, 
-                          batch_size = self.batch_size, shuffle=True)
-    @staticmethod
-    def _add_special_tokens(st):
-        if type(st) == list:
-            st_mod = [constants.CLS_ITEM]
-            st_mod.extend(st)
-        elif type(st) == torch.Tensor:
-            st_mod = torch.cat((torch.ones(st.size(0)).unsqueeze(1) * constants.CLS_ITEM, st), dim=-1)  # add CLS token
-        else:
-            raise TypeError(f'Argument st should have type list or torch.Tensor but had {type(st)} instead.')
-        return st_mod
-  
-    def setup(self, stage=None):
-        
-        #Load and format dataset
-        dirs = {v.split('_')[-1][:-4]: v for v in os.listdir(self.filepath) if v.endswith(FILE_EXT)}
-        print(dirs)
-        self.train_data = self.prepare_data(pd.read_csv(self.filepath + dirs[TRAIN]))
-        self.val_data = self.prepare_data(pd.read_csv(self.filepath + dirs[VAL]))
-        self.test_data = self.prepare_data(pd.read_csv(self.filepath + dirs[TEST]))
-
 class SpotifyDataModule(pl.LightningDataModule):
     def __init__(self, filepath, batch_size, max_seq_len=20, preprocess=None, dev=False):
         super().__init__()
@@ -128,7 +80,7 @@ class SpotifyDataModule(pl.LightningDataModule):
             session_ids.extend(session_ids_i)
             pbar.set_description(f'vocab: {len(vocab)} sessions:{len(sessions)} interactions: {total_interactions}')
 
-            if total_interactions > 2000000: #stop when 10M sessions are sampled
+            if len(sessions) > 450000: #stop when 10M sessions are sampled
                 break
         
         if self.dev:
@@ -271,6 +223,77 @@ class SpotifyDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(self.test_data, self.batch_size, num_workers= os.cpu_count(), pin_memory = False)
 
+class LfMDataModule(SpotifyDataModule):
+    def __init__(self, filepath, batch_size, max_seq_len=20, preprocess=None, dev=False):
+        #super().__init__(filepath, batch_size, max_seq_len=20, preprocess=None, dev=False)
+          
+        self.filepath = filepath
+        self.preprocess = preprocess
+          
+        self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
+        self.dev = dev
+
+        self.setup()
+  
+    def load_data(self, filepath):
+        sessions = list()
+        skips = list()
+        vocab = set()
+        session_ids = list()
+        total_interactions = 0
+
+        sessions_i, skips_i, vocab_i, session_ids_i = self.load_csv(filepath)
+        total_interactions += sum([len(x) for x in sessions_i])
+        sessions.extend(sessions_i)
+        skips.extend(skips_i)
+        vocab = vocab.union(vocab_i)
+        session_ids.extend(session_ids_i)
+        print(f'vocab: {len(vocab)} sessions:{len(sessions)} interactions: {total_interactions}')
+        
+        if self.dev:
+            sessions = sessions[:1000]
+            skips = skips[:1000]
+            session_ids = session_ids[:1000]
+
+        return self.preprocess_data(sessions, skips, vocab, session_ids)
+    
+    def load_csv(self, f):
+        df = pd.read_csv(f)
+        cols = ['timestamp', 'track-name', 'Session_id', 'skip']
+        df = df[cols]
+
+        df['track-name'] = df['track-name'].factorize()[0]
+        df['skip'] = 1 - df['skip']
+
+        df = df[df.groupby('Session_id').transform('size')>5]
+        groups = df.groupby('Session_id')
+
+        df = df.loc[(groups['skip'].transform('max') > 0) & (groups['Session_id'].transform('size') > 5) #& (groups['skip_level'].transform(lambda x: x[-3]) <2)
+                    ,:].sort_values(by = ['Session_id','timestamp'], axis=0)
+        groups = df.groupby(['Session_id'])
+
+        sessions = self.split_sessions(groups['track-name'].apply(list).to_list())
+        skips = self.split_sessions(groups['skip'].apply(list).to_list())
+        vocab = set(df['track-name'].to_list())
+        session_ids = [x + 1 for x in range(len(sessions))] #preserve ordering of session_ids
+
+        return sessions, skips, vocab, session_ids
+    
+    def split_sessions(self, s, max_seq_len=20, min_seq_len=5):
+        s_max = list()
+        for s_ in s:
+            if (len(s_) <= max_seq_len and len(s_) >= min_seq_len):
+                s_max.extend([s_])
+            else:
+                prev = 0
+                for x in range(max_seq_len, len(s_), max_seq_len):
+                    s_max.extend([s_[prev:x]])
+                    prev = x
+                if len(s_) - prev >= min_seq_len:
+                    s_max.extend([s_[prev:]])
+        return s_max
+
 class DataSampler:
     def __init__(self, filepath, n=1e7,seed=1, path='Sampled_{}', 
         name='data-{}.csv', chunk_size=1e6):
@@ -307,3 +330,11 @@ class DataSampler:
         print(f'saving to path: {self.save_path}')
         for start in tqdm(range(0, df.shape[0], chunk_size)):
             df.iloc[start:start + chunk_size].to_csv(path.format(str(start // chunk_size)))
+
+if __name__ == '__main__':
+    lfm = LfMDataModule('/home/pavans/dev/sequential-music-recommendation/datasets/lfm/plays_with_session_with_skip_2.csv')
+    m = 10
+    for idx,x in enumerate(lfm.train_dataloader()):
+        print([y.shape for y in x])
+        if idx > m:
+            break 

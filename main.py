@@ -1,5 +1,5 @@
 import datetime
-from data_process import SpotifyDataModule
+from data_process import SpotifyDataModule, LfMDataModule
 from models import VanillaTransformer
 import yaml
 import os
@@ -79,7 +79,10 @@ if __name__ == '__main__':
     #seed_everything(config['exp_params']['manual_seed'], True)
 
     print('Loading data....')
-    data = SpotifyDataModule(config['data_params']['data_path'], config['data_params']['batch_size'], dev=config['dev'])
+    if (config['data_params']['data_path'].endswith('.csv')):
+        data = LfMDataModule(config['data_params']['data_path'], config['data_params']['batch_size'], dev=config['dev'])
+    else:
+        data = SpotifyDataModule(config['data_params']['data_path'], config['data_params']['batch_size'], dev=config['dev'])
 
     model = VanillaTransformer(**config['model_params'], vocab_size=len(data.vocab))
 
