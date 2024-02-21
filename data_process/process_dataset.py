@@ -128,7 +128,7 @@ class SpotifyDataModule(pl.LightningDataModule):
     
     def skip_preprocess(self, l, binary=True, unidirectional = False): #do not consider weak skips + pad. binary=True ignores severity of skip
         if binary:
-           seq = self.zeropad([0 if x > 1 else 1 for x in l], self.max_seq_len, padding_val=SKIP_PAD) #0 = SKIP, 1 = POSITIVE
+           seq = self.zeropad([1 if x > 1 else 0 for x in l], self.max_seq_len, padding_val=SKIP_PAD) #0 = SKIP, 1 = POSITIVE NOPE 1=SKIP, 0=POSITIVE
         elif self.preprocess == 'contrastive':
             seq = self.zeropad(l, self.max_seq_len, padding_val=SKIP_PAD)
         else:
@@ -215,13 +215,13 @@ class SpotifyDataModule(pl.LightningDataModule):
         return train, val, test, vocab
     
     def train_dataloader(self):
-        return DataLoader(self.train_data, self.batch_size, num_workers = os.cpu_count(), shuffle=True, pin_memory = False)
+        return DataLoader(self.train_data, self.batch_size, num_workers = os.cpu_count() // 4, shuffle=True, pin_memory = False)
     
     def val_dataloader(self):
-        return DataLoader(self.val_data, self.batch_size, num_workers = os.cpu_count(), pin_memory = False)
+        return DataLoader(self.val_data, self.batch_size, num_workers = os.cpu_count() // 4, shuffle=True, pin_memory = False)
 
     def test_dataloader(self):
-        return DataLoader(self.test_data, self.batch_size, num_workers= os.cpu_count(), pin_memory = False)
+        return DataLoader(self.test_data, self.batch_size, num_workers= os.cpu_count() // 4, shuffle=True, pin_memory = False)
 
 class LfMDataModule(SpotifyDataModule):
     def __init__(self, filepath, batch_size, max_seq_len=20, preprocess=None, dev=False):
@@ -264,7 +264,9 @@ class LfMDataModule(SpotifyDataModule):
         df = df[cols]
 
         df['track-name'] = df['track-name'].factorize()[0]
-        df['skip'] = 1 - df['skip']
+        #df['skip'] = 1 - df['skip']
+        
+        df['skip'] = df['skip'].astype(int)
 
         df = df[df.groupby('Session_id').transform('size')>5]
         groups = df.groupby('Session_id')
@@ -293,6 +295,15 @@ class LfMDataModule(SpotifyDataModule):
                 if len(s_) - prev >= min_seq_len:
                     s_max.extend([s_[prev:]])
         return s_max
+    
+    def skip_preprocess(self, l, binary=True, unidirectional = False): #do not consider weak skips + pad. binary=True ignores severity of skip
+        if binary:
+           seq = self.zeropad(l, self.max_seq_len, padding_val=SKIP_PAD) #0 = SKIP, 1 = POSITIVE NOPE 1=SKIP, 0=POSITIVE
+        elif self.preprocess == 'contrastive':
+            seq = self.zeropad(l, self.max_seq_len, padding_val=SKIP_PAD)
+        else:
+            seq = self.zeropad([x - 1 if x != 0 else 0 for x in l], self.max_seq_len, padding_val=SKIP_PAD)
+        return seq #+ [SKIP_PAD] if unidirectional else [SKIP_PAD] + seq
 
 class DataSampler:
     def __init__(self, filepath, n=1e7,seed=1, path='Sampled_{}', 

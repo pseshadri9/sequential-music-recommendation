@@ -1,8 +1,10 @@
 import datetime
 from data_process import SpotifyDataModule, LfMDataModule
 from models import VanillaTransformer
+from notification import manifestHandler
 import yaml
 import os
+import sys
 
 import torch
 from pytorch_lightning import Trainer
@@ -12,6 +14,7 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, Ea
 from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.utilities.model_summary import ModelSummary
 
+CONFIG_FILE = 'config/config_lfm.yml'
 
 def train(runner, model, dual_train=False, config=None):
     if dual_train:
@@ -58,7 +61,10 @@ def get_trainer(config, ckpt_path = None):
     return runner, tb_logger, checkpoint_callback
 
 if __name__ == '__main__':
-    with open('config.yml', 'r') as file:
+    if len(sys.argv) > 1:
+        CONFIG_FILE = sys.argv[1]
+
+    with open(CONFIG_FILE, 'r') as file:
         config = yaml.safe_load(file)
 
     
@@ -114,7 +120,7 @@ if __name__ == '__main__':
         model = VanillaTransformer.load_from_checkpoint(config['data_params']['ckpt_type'])
         model.eval()
         runner.fit(model, data.train_dataloader(), data.val_dataloader())
-        runner.test(ckpt_path = 'best', dataloaders = data.test_dataloader())
+        evals = runner.test(ckpt_path = 'best', dataloaders = data.test_dataloader())
     
     else:
         try:
@@ -124,6 +130,10 @@ if __name__ == '__main__':
         except KeyboardInterrupt:
             pass
 
-        runner.test(ckpt_path="best", dataloaders = data.test_dataloader())
+        evals = runner.test(ckpt_path="best", dataloaders = data.test_dataloader())
+
+    manifest = manifestHandler(config=config, eval=evals[0], model_path=runner.checkpoint_callback.best_model_path, name=exp_name)
+    manifest.save()
+    
     
     print('TIME ELAPSED: ',round((datetime.datetime.now() - start_datetime).total_seconds() / 3600, 2), 'HOURS')

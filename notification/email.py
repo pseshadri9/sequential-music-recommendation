@@ -1,6 +1,6 @@
 import smtplib, ssl
 from email.message import EmailMessage
-from email_args import SOURCE_EMAIL, PASSWORD, DESTINATION_EMAIL, HEADER, SUBJECT
+from .email_args import SOURCE_EMAIL, PASSWORD, DESTINATION_EMAIL, HEADER, SUBJECT
 
 PORT = 465 # For SSL
 '''
