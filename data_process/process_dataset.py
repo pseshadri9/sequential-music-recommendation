@@ -113,6 +113,7 @@ class SpotifyDataModule(pl.LightningDataModule):
                 skips[idx] = skip
                     
         skips = [self.skip_preprocess(skip) for skip in skips]
+        session_ids = [idx for idx, x in enumerate(session_ids)]
 
         return sessions, skips, vocab, session_ids
 
@@ -173,6 +174,8 @@ class SpotifyDataModule(pl.LightningDataModule):
 
             print(check_sessions and check_skips and check_id)
         '''
+        #sessions, skips, vocab, session_ids = self.preprocess_data(sessions, skips, vocab, session_ids)
+        
         return sessions, skips, vocab, session_ids
   
     def setup(self, stage='TRAIN', select_criterion=None):
@@ -183,6 +186,14 @@ class SpotifyDataModule(pl.LightningDataModule):
         else:
             sessions, skips, vocab, session_ids = self.load_data(self.filepath)
         
+        session_ids = [[x]*len(y) for x,y in zip(session_ids, sessions)]
+
+        #nums = [[x for x in range(len(y))] for y in sessions]
+        #skips = [[1 - x for x in s] for s in skips] #FOR LFM-1K
+        #np_arr = [(x_, y_, z_, n_)  for x,y,z,n in zip(session_ids, sessions, skips, nums) for x_,y_,z_, n_ in zip(x,y,z,n)]
+        #import numpy as np
+        #np.save('lfm-1k.npy', np.array(np_arr))
+        #raise Exception('done!')
         self.train_data, self.val_data, self.test_data, self.vocab = self.split_data(sessions, skips, vocab)
     
         
@@ -215,13 +226,13 @@ class SpotifyDataModule(pl.LightningDataModule):
         return train, val, test, vocab
     
     def train_dataloader(self):
-        return DataLoader(self.train_data, self.batch_size, num_workers = os.cpu_count() // 4, shuffle=True, pin_memory = False)
+        return DataLoader(self.train_data, self.batch_size, num_workers = 4, shuffle=True, pin_memory = False)
     
     def val_dataloader(self):
-        return DataLoader(self.val_data, self.batch_size, num_workers = os.cpu_count() // 4, shuffle=True, pin_memory = False)
+        return DataLoader(self.val_data, self.batch_size, num_workers = 4, pin_memory = False)
 
     def test_dataloader(self):
-        return DataLoader(self.test_data, self.batch_size, num_workers= os.cpu_count() // 4, shuffle=True, pin_memory = False)
+        return DataLoader(self.test_data, self.batch_size, num_workers= 4, pin_memory = False)
 
 class LfMDataModule(SpotifyDataModule):
     def __init__(self, filepath, batch_size, max_seq_len=20, preprocess=None, dev=False):

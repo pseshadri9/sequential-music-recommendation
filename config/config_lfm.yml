@@ -8,7 +8,7 @@ model_params:
   k: [1, 5, 10, 20]
   return_skip: False
   lr: 0.005
-  bidirectional: True
+  bidirectional: False
 
 dual_train: False
 dev: False
@@ -27,7 +27,7 @@ exp_params:
   manual_seed: 1265
 
 trainer_params:
-  max_epochs: 10
+  max_epochs: 20
   accelerator: "gpu"
   devices: [0]
 

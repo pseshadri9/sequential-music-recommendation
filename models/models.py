@@ -1,11 +1,11 @@
 import pytorch_lightning as pl
 import torch
 from torchmetrics import AUROC
-from torchmetrics.retrieval import RetrievalMAP
+from torchmetrics.retrieval import RetrievalMAP, RetrievalMRR
 from tqdm import tqdm
 
 from utility import InfoNCE
-from data_process import MASKING_ITEM, PADDING_ITEM
+from data_process import MASKING_ITEM, PADDING_ITEM, SKIP_PAD
 
 class VanillaTransformer(pl.LightningModule): 
     def __init__(self, max_seq_len = None, vocab_size = None, h_dim = None, 
@@ -44,8 +44,8 @@ class VanillaTransformer(pl.LightningModule):
         self.lr = lr
           
         # Define loss 
-        self.loss = torch.nn.CrossEntropyLoss(ignore_index=0)
-        #self.loss = torch.nn.NLLLoss(ignore_index=0)
+        #self.loss = torch.nn.CrossEntropyLoss(ignore_index=0)
+        self.loss = torch.nn.NLLLoss(ignore_index=PADDING_ITEM)
         if self.return_skip:
             self.skip_loss = InfoNCE(negative_mode='paired', ignore_index=PADDING_ITEM) #torch.nn.CrossEntropyLoss(ignore_index=2)
             #self.sigma_target = torch.nn.parameter.Parameter(torch.rand(1)).to(self.device)
@@ -65,16 +65,23 @@ class VanillaTransformer(pl.LightningModule):
         self.auroc_target = AUROC(task="multiclass", num_classes=vocab_size, ignore_index=0,thresholds= 5, average='weighted', validate_args=False)
         self.auroc_skip = AUROC(task="multilabel", num_labels=max_seq_len, thresholds= 5, ignore_index=2, average='weighted', validate_args=False)
         self.MAP = RetrievalMAP(top_k=10)
+        self.skip_MRR = RetrievalMRR(top_k = 10)
         self.MAP_outs = list()
+        self.init_weights()
 
     def init_weights(self):
         initrange = 0.02
-        nn.init.trunc_normal_(self.encoder.weight, a=-initrange, b=initrange)
-        nn.init.zeros_(self.decoder.bias)
-        nn.init.zeros_(self.decoder_bias)
-        nn.init.trunc_normal_(self.decoder.weight, a=-initrange, b=initrange)
-        nn.init.trunc_normal_(self.vocab.weight, a=-initrange, b=initrange)
-        nn.init.trunc_normal_(self.pe.weight, a=-initrange, b=initrange)
+        for name, param in self.encoder.named_parameters():
+            if 'weight' in name and param.data.dim() == 2:
+                torch.nn.init.trunc_normal_(param, a=-initrange, b=initrange)
+        for name, param in self.decoder.named_parameters():
+            if 'weight' in name and param.data.dim() == 2:
+                torch.nn.init.trunc_normal_(param, a=-initrange, b=initrange)
+        #torch.nn.init.zeros_(self.decoder.bias)
+        #nn.init.zeros_(self.decoder_bias)
+        #torch.nn.init.trunc_normal_(self.decoder.weight, a=-initrange, b=initrange)
+        torch.nn.init.trunc_normal_(self.vocab.weight, a=-initrange, b=initrange)
+        torch.nn.init.trunc_normal_(self.pe.weight, a=-initrange, b=initrange)
     
     def _generate_square_subsequent_mask(self, sz):
         mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
@@ -117,6 +124,38 @@ class VanillaTransformer(pl.LightningModule):
 
         return self.softmax(torch.cat((X[:, :, observed_tracks], X[:, :, negative_samples]), axis=2)), indices
     
+    def retrieve_samples(self, X, y, num=1000):
+        observed_tracks, indices = torch.unique(y, return_inverse=True)
+
+        observed_tracks = observed_tracks.to(self.device)
+        
+        tracks = torch.linspace(0,self.vocab_size - 1, self.vocab_size).int().to(self.device)
+
+        tracks[observed_tracks] = 0
+
+        idx = torch.randperm(self.vocab_size - observed_tracks.shape[0] - 1).to(self.device)
+
+        negative_samples = tracks[tracks != 0][idx[:num]]
+
+
+        return observed_tracks, negative_samples
+    
+    def return_batched_samples(self, batch):
+        # Defining validation steps for our model
+        sessions, targets = self.get_test_batch(batch[:-1])
+        skips = batch[-1]
+
+        if self.bidirectional:
+            sessions = self._mask_tracks(sessions, TRAIN=False)
+
+        #output, x_ = self.forward(sessions, )
+        #output = output.view(-1, self.vocab_size)
+        targets = targets.long()
+        #output = self.softmax(output)
+        #output, targets = self.sampled_softmax(output, targets)
+        return skips, sessions,*self.retrieve_samples(sessions, targets)
+
+    
     def _mask_unseen_tracks(self, y, num=1000):
         pass
 
@@ -141,7 +180,7 @@ class VanillaTransformer(pl.LightningModule):
 
     def configure_optimizers(self):
         # Define and return the optimizer 
-        return torch.optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr = self.lr)
+        return torch.optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr = self.lr) #weight_decay=1e-8
     
     def training_step(self, train_batch, batch_idx):
 
@@ -183,13 +222,15 @@ class VanillaTransformer(pl.LightningModule):
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
 
-            train_loss = skip_loss + target_loss
+            train_loss =  skip_loss + target_loss
             #train_loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
                 #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
         else:
             train_loss = target_loss #+ skip_loss #+ 0.1 * skip_loss
 
         self.log("train_loss", train_loss.detach(), prog_bar=True, sync_dist=True)
+        if torch.isnan(train_loss):
+            print(train_loss, output, targets)
 
         if self.return_skip:
             try:
@@ -226,8 +267,6 @@ class VanillaTransformer(pl.LightningModule):
         idx = torch.argmin(sessions, dim=1) - 1       
         output = output[range(output.shape[0]), idx, :]
 
-
-
         target_loss = self.loss(output, targets)
         if self.return_skip:
             if self.bidirectional:
@@ -238,7 +277,7 @@ class VanillaTransformer(pl.LightningModule):
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
 
-            loss = skip_loss + target_loss
+            loss = target_loss #skip_loss + target_loss
 
             #loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
                 #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
@@ -252,17 +291,32 @@ class VanillaTransformer(pl.LightningModule):
         #self.auroc_target(output, targets)
         #self.compute_MAP(output.detach(), targets.detach(), skips.detach())
 
-        index = torch.Tensor(range(output.shape[0])).long().to(self.device).unsqueeze(dim=-1)
+        ##Skip MRR
+        skipped_targets = skips[range(output.shape[0]), idx] == 1
+        if torch.any(skipped_targets):
+            skip_output = output[skipped_targets, :]
+            skip_target = targets[skipped_targets]
+
+            s_indexes = torch.arange(skip_output.shape[0]).unsqueeze(dim=1).tile((skip_output.shape[1]))
+            MRR_target = torch.zeros_like(s_indexes).bool()
+            MRR_target[range(skip_target.shape[0]), skip_target] = True
+            self.skip_MRR.update(skip_output.exp().detach().cpu(), MRR_target.detach().cpu(), indexes=s_indexes.detach().cpu())
+        #raise Exception(skip_output.shape, MRR_target.shape, s_indexes.shape, MRR_target[MRR_target == True].sum(), MRR_target, skip_output, skip_target)
+
+        #index = torch.Tensor(range(output.shape[0])).long().to(self.device).unsqueeze(dim=-1)
         #self.auroc_skip(output[index, torch.cat((sessions[:, :-1], targets.unsqueeze(dim=-1)), axis = 1)], skips.long())
 
-        self.log("val_loss", loss.detach(), prog_bar=True, sync_dist=True)
+        self.log("val_loss", loss.detach().cpu(), prog_bar=True, sync_dist=True)
+        if torch.isnan(loss):
+            print(loss, output, targets)
+
         self.val_outs.append(self.test_top_k([(output.detach().cpu(), targets.detach().cpu())]))
 
         if self.return_skip:
             self.log("val target_loss", target_loss.detach(), prog_bar=True, sync_dist=True)
             self.log("val skip_loss", skip_loss.detach(), prog_bar=True, sync_dist=True)
         
-        return loss
+        return target_loss
 
     def compute_MAP(self, preds, sessions, skips):
         with torch.no_grad():
@@ -283,9 +337,6 @@ class VanillaTransformer(pl.LightningModule):
         
         self.MAP_outs.clear()
         return res / tot
-
-
-
 
     def test_step(self, batch, batch_idx):
         # Defining validation steps for our model
@@ -328,13 +379,26 @@ class VanillaTransformer(pl.LightningModule):
         
         index = torch.Tensor(range(output.shape[0])).long().to(self.device).unsqueeze(dim=-1)
         #self.auroc_skip(output[index, torch.cat((sessions[:, :-1], targets.unsqueeze(dim=-1)), axis = 1)], skips.long())
+
+        ##MAP
         indexes = torch.arange(output.shape[0]).unsqueeze(dim=1).tile((output.shape[1]))
         MAP_target = torch.zeros_like(indexes).bool()
         MAP_target[range(targets.shape[0]), targets] = True
         self.MAP.update(output.detach().cpu(), MAP_target.detach().cpu(), indexes=indexes.detach().cpu())
 
+        ##Skip MRR
+        skipped_targets = skips[range(output.shape[0]), idx] == 1
+        if torch.any(skipped_targets):
+            skip_output = output[skipped_targets, :]
+            skip_target = targets[skipped_targets]
 
-        self.log("test_loss", loss.detach(), prog_bar=True, sync_dist=True)
+            s_indexes = torch.arange(skip_output.shape[0]).unsqueeze(dim=1).tile((skip_output.shape[1]))
+            MRR_target = torch.zeros_like(s_indexes).bool()
+            MRR_target[range(skip_target.shape[0]), skip_target] = True
+            self.skip_MRR.update(skip_output.exp().detach().cpu(), MRR_target.detach().cpu(), indexes=s_indexes.detach().cpu())
+
+
+        self.log("test_loss", loss.detach().cpu(), prog_bar=True, sync_dist=True)
         self.val_outs.append(self.test_top_k([(output.detach().cpu(), targets.detach().cpu())]))
 
         if self.return_skip:
@@ -422,6 +486,11 @@ class VanillaTransformer(pl.LightningModule):
         #self.log('Val AUROC Skip', self.auroc_skip, on_epoch=True)
         self.log('Val MAP', self.MAP.compute().item(), on_epoch=True)
         self.MAP.reset()
+        
+        num_skip = torch.cat(self.skip_MRR.target, dim=0).sum()
+        self.log('Num Val Skips', num_skip, on_epoch=True)
+        self.log('Val Skip MRR', self.skip_MRR.compute().item(), on_epoch=True)
+        self.skip_MRR.reset()
 
         self.val_outs.clear()  # free memory
         self.skip_outs.clear()
@@ -444,6 +513,11 @@ class VanillaTransformer(pl.LightningModule):
         #self.log('Test AUROC Skip', self.auroc_skip, on_epoch=True)
         self.log('Test MAP', self.MAP.compute().item(), on_epoch=True)
         self.MAP.reset()
+
+        num_skip = torch.cat(self.skip_MRR.target, dim=0).sum()
+        self.log('Num Test Skips', num_skip, on_epoch=True)
+        self.log('Test Skip MRR', self.skip_MRR.compute().item(), on_epoch=True)
+        self.skip_MRR.reset()
 
         self.val_outs.clear()  # free memory
         self.skip_outs.clear()

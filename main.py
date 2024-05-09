@@ -74,7 +74,7 @@ if __name__ == '__main__':
         #config['trainer_params']['accelerator'] = 'cpu'
         #del config['trainer_params']['devices']
     else:
-        exp_name = input()
+        exp_name = 'dev' #input()
     #torch.manual_seed(config['exp_params']['manual_seed'])
     seed_everything(config['exp_params']['manual_seed'])
     torch.set_float32_matmul_precision('high')
@@ -95,6 +95,47 @@ if __name__ == '__main__':
     #model = torch.compile(model)
 
     runner, tb_logger, checkpoint_callback = get_trainer(config)
+
+    '''
+    name = config['logging_params']['name']
+    bs = config['data_params']['batch_size']
+
+    targets = list()
+    neg_samples = list()
+    sessions = list()
+    skips = list()
+    from tqdm import tqdm
+    for batch in tqdm(data.test_dataloader()):
+        skip, session, target, neg = model.return_batched_samples(batch)
+
+        if name == 'LFM':
+            skip = -skip+1
+        #raise Exception(session.shape)
+        #raise Exception([x.shape for x in output])
+        if target.shape[0] != bs:
+            target = torch.cat((target, torch.zeros((bs - target.shape[0],))), axis=0)
+            session = torch.cat((session, torch.zeros((bs - session.shape[0], *session.shape[1:]))), axis=0)
+            skip = torch.cat((skip, torch.zeros((bs - skip.shape[0], *skip.shape[1:]))), axis=0)
+        targets.append(target.unsqueeze(dim=0))
+        neg_samples.append(neg.unsqueeze(dim=0))
+        sessions.append(session.unsqueeze(dim=0))
+        skips.append(skip.unsqueeze(dim=0))
+
+    
+    targets = torch.cat(targets, axis=0)
+    neg_samples = torch.cat(neg_samples, axis=0)
+    sessions = torch.cat(sessions, axis=0)
+    skips = torch.cat(skips, axis=0)
+    import numpy as np
+    np.save(f'datasets/test_samples/{name}-targets', targets.detach().cpu().numpy())
+    np.save(f'datasets/test_samples/{name}-neg_samples', neg_samples.detach().cpu().numpy())
+    np.save(f'datasets/test_samples/{name}-sessions', sessions.detach().cpu().numpy())
+    np.save(f'datasets/test_samples/{name}-skips', skips.detach().cpu().numpy())
+    print(targets.shape, neg_samples.shape, sessions.shape, skips.shape)
+    raise SystemExit(0)
+        
+    '''
+
     
     print(ModelSummary(model))
 

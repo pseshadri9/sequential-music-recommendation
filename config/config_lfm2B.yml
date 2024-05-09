@@ -8,7 +8,7 @@ model_params:
   k: [1, 5, 10, 20]
   return_skip: False
   lr: 0.005
-  bidirectional: True
+  bidirectional: False
 
 dual_train: False
 dev: False
@@ -18,7 +18,7 @@ data_params:
   load_ckpt: False
   ckpt_path: "/home/pavans/dev/sequential-music-recommendation/logger_runs/newAuroc/VanillaTinitial 200 epoch run /version_0/checkpoints"
   ckpt_type: "/home/pavans/dev/sequential-music-recommendation/logger_runs/newAuroc/VanillaT: test checkpoint logic/version_2/checkpoints/epoch=0-step=1487.ckpt"
-  batch_size: 64
+  batch_size: 32
   patch_size: 64
   num_workers: 4
 

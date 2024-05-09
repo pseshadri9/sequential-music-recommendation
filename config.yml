@@ -8,7 +8,7 @@ model_params:
   k: [1, 5, 10, 20]
   return_skip: False
   lr: 0.005
-  bidirectional: False
+  bidirectional: True
 
 dual_train: False
 dev: False
