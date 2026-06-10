@@ -9,7 +9,7 @@ import sys
 import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.utilities.seed import seed_everything
+from pytorch_lightning import seed_everything
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, EarlyStopping
 from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.utilities.model_summary import ModelSummary
@@ -74,7 +74,7 @@ if __name__ == '__main__':
         #config['trainer_params']['accelerator'] = 'cpu'
         #del config['trainer_params']['devices']
     else:
-        exp_name = 'dev' #input()
+        exp_name = input()
     #torch.manual_seed(config['exp_params']['manual_seed'])
     seed_everything(config['exp_params']['manual_seed'])
     torch.set_float32_matmul_precision('high')
@@ -127,10 +127,10 @@ if __name__ == '__main__':
     sessions = torch.cat(sessions, axis=0)
     skips = torch.cat(skips, axis=0)
     import numpy as np
-    np.save(f'datasets/test_samples/{name}-targets', targets.detach().cpu().numpy())
-    np.save(f'datasets/test_samples/{name}-neg_samples', neg_samples.detach().cpu().numpy())
-    np.save(f'datasets/test_samples/{name}-sessions', sessions.detach().cpu().numpy())
-    np.save(f'datasets/test_samples/{name}-skips', skips.detach().cpu().numpy())
+    np.save(f'datasets/test_samples_2B_2012-2014/{name}-targets', targets.detach().cpu().numpy())
+    np.save(f'datasets/test_samples_2B_2012-2014/{name}-neg_samples', neg_samples.detach().cpu().numpy())
+    np.save(f'datasets/test_samples_2B_2012-2014/{name}-sessions', sessions.detach().cpu().numpy())
+    np.save(f'datasets/test_samples_2B_2012-2014/{name}-skips', skips.detach().cpu().numpy())
     print(targets.shape, neg_samples.shape, sessions.shape, skips.shape)
     raise SystemExit(0)
         
@@ -161,7 +161,7 @@ if __name__ == '__main__':
         model = VanillaTransformer.load_from_checkpoint(config['data_params']['ckpt_type'])
         model.eval()
         runner.fit(model, data.train_dataloader(), data.val_dataloader())
-        evals = runner.test(ckpt_path = 'best', dataloaders = data.test_dataloader())
+        evals = runner.test(ckpt_path = config['data_params']['ckpt_type'], dataloaders = data.test_dataloader())
     
     else:
         try:
@@ -171,7 +171,7 @@ if __name__ == '__main__':
         except KeyboardInterrupt:
             pass
 
-        evals = runner.test(ckpt_path="best", dataloaders = data.test_dataloader())
+        evals = runner.test(ckpt_path="last", dataloaders = data.test_dataloader())
 
     manifest = manifestHandler(config=config, eval=evals[0], model_path=runner.checkpoint_callback.best_model_path, name=exp_name)
     manifest.save()

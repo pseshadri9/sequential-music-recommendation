@@ -11,4 +11,17 @@ notification/email_args.py
 #ignore pycache
 /pycache/*
 *.pyc
+
+# ignore notebook checkpoints
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# ignore data and model checkpoint artifacts
+*.npy
+*.npz
+*.zip
+*.pt
+*.pth
+*.ckpt
+
 # add any others as necessary

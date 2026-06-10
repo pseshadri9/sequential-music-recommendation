@@ -10,7 +10,7 @@ from data_process import MASKING_ITEM, PADDING_ITEM, SKIP_PAD
 class VanillaTransformer(pl.LightningModule): 
     def __init__(self, max_seq_len = None, vocab_size = None, h_dim = None, 
                 lr = 0.005, nhead = 4, token_dim = None, dropout = 0.2, nEncoders = 1,
-                k = [1, 5, 10, 50, 100], return_skip = False, bidirectional = False):
+                k = [1, 5, 10, 50, 100], return_skip = False, bidirectional = False, wt=1):
         super(VanillaTransformer, self).__init__()
         self.save_hyperparameters()
           
@@ -25,6 +25,7 @@ class VanillaTransformer(pl.LightningModule):
         self.vocab = torch.nn.Embedding(vocab_size, token_dim, padding_idx=0)
         self.return_skip = return_skip
         self.bidirectional = bidirectional
+        self.wt = wt
 
         encoder_layers = torch.nn.TransformerEncoderLayer(token_dim, nhead, h_dim, dropout, batch_first=True)
         self.encoder = torch.nn.TransformerEncoder(encoder_layers, nEncoders)
@@ -121,7 +122,6 @@ class VanillaTransformer(pl.LightningModule):
 
         negative_samples = tracks[tracks != 0][idx[:num]]
 
-
         return self.softmax(torch.cat((X[:, :, observed_tracks], X[:, :, negative_samples]), axis=2)), indices
     
     def retrieve_samples(self, X, y, num=1000):
@@ -179,8 +179,13 @@ class VanillaTransformer(pl.LightningModule):
         return output, x_
 
     def configure_optimizers(self):
-        # Define and return the optimizer 
-        return torch.optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr = self.lr) #weight_decay=1e-8
+        # Define and return the optimizer
+        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr = self.lr) #weight_decay=1e-8
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.9)
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 20000},
+        }
     
     def training_step(self, train_batch, batch_idx):
 
@@ -222,15 +227,17 @@ class VanillaTransformer(pl.LightningModule):
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
 
-            train_loss =  skip_loss + target_loss
+            train_loss =  self.wt*skip_loss + target_loss
             #train_loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
                 #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
         else:
             train_loss = target_loss #+ skip_loss #+ 0.1 * skip_loss
 
         self.log("train_loss", train_loss.detach(), prog_bar=True, sync_dist=True)
-        if torch.isnan(train_loss):
-            print(train_loss, output, targets)
+        if torch.isnan(train_loss).any():
+            return None
+            print(train_loss, output, targets, sessions, batch_idx)
+            train_loss = torch.Tensor([0])
 
         if self.return_skip:
             try:
@@ -244,6 +251,8 @@ class VanillaTransformer(pl.LightningModule):
         #top_k, total = self.test_top_k([(output.detach().cpu(), targets.detach().cpu())], k = [5])
         #self.log_dict({f'top-{k_i} HR': v / total for k_i, v in top_k.items()})
         
+        if torch.isnan(train_loss).any():
+            return None
         return train_loss
 
     
@@ -305,10 +314,16 @@ class VanillaTransformer(pl.LightningModule):
 
         #index = torch.Tensor(range(output.shape[0])).long().to(self.device).unsqueeze(dim=-1)
         #self.auroc_skip(output[index, torch.cat((sessions[:, :-1], targets.unsqueeze(dim=-1)), axis = 1)], skips.long())
+        if torch.isnan(target_loss).any():
+            return None
+            raise Exception(loss, output, targets)
+        if torch.isnan(loss).any():
+            return None
+            raise Exception(output, targets, sessions, batch_idx)
+            loss = torch.Tensor([0])
+            target_loss = torch.Tensor([0])
 
         self.log("val_loss", loss.detach().cpu(), prog_bar=True, sync_dist=True)
-        if torch.isnan(loss):
-            print(loss, output, targets)
 
         self.val_outs.append(self.test_top_k([(output.detach().cpu(), targets.detach().cpu())]))
 
@@ -386,6 +401,12 @@ class VanillaTransformer(pl.LightningModule):
         MAP_target[range(targets.shape[0]), targets] = True
         self.MAP.update(output.detach().cpu(), MAP_target.detach().cpu(), indexes=indexes.detach().cpu())
 
+        if torch.isnan(loss):
+            return None
+            raise Exception(output, targets, sessions, batch_idx)
+            print([x.isnan().any() for x in (loss, output, targets)])
+            loss = torch.Tensor([0])
+
         ##Skip MRR
         skipped_targets = skips[range(output.shape[0]), idx] == 1
         if torch.any(skipped_targets):
@@ -405,6 +426,8 @@ class VanillaTransformer(pl.LightningModule):
             self.log("test target_loss", target_loss.detach(), prog_bar=True, sync_dist=True)
             self.log("test skip_loss", skip_loss.detach(), prog_bar=True, sync_dist=True)
         
+        if torch.isnan(loss).any():
+            return None
         return loss
 
     def get_val_batch(self, valid_batch):

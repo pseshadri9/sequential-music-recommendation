@@ -4,22 +4,22 @@ model_params:
   nhead : 8
   token_dim: 128
   nEncoders: 2
-  dropout: 0.1
+  dropout: 0.2
   k: [1, 5, 10, 20]
-  return_skip: True
-  lr: 0.005
+  return_skip: False
+  lr: 0.0005
   bidirectional: False
-  wt: 0.1
+  wt: 0.2
 
 dual_train: False
 dev: False
 
 data_params:
-  data_path: "datasets/lfm-2b/plays_with_session_with_skip2.csv"
+  data_path: "datasets/lfm-2b/2015/lfm_2B_2012_100k.csv"
   load_ckpt: False
   ckpt_path: "logger_runs/newAuroc/VanillaTinitial 200 epoch run /version_0/checkpoints"
   ckpt_type: "logger_runs/newAuroc/VanillaT: test checkpoint logic/version_2/checkpoints/epoch=0-step=1487.ckpt"
-  batch_size: 32
+  batch_size: 64
   patch_size: 64
   num_workers: 4
 
