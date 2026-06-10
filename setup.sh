@@ -2,30 +2,19 @@
 
 set -e  # Exit immediately on error
 
-# === CONFIG ===
-MINICONDA_INSTALLER="Miniconda3-latest-Linux-x86_64.sh"
-MINICONDA_URL="https://repo.anaconda.com/miniconda/$MINICONDA_INSTALLER"
-INSTALL_DIR="$HOME/miniconda3"
+# Install uv (https://docs.astral.sh/uv/) if it isn't already available.
+if ! command -v uv >/dev/null 2>&1; then
+  echo "Installing uv..."
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  # Make uv available in the current shell for the steps below.
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 
-echo "Downloading Miniconda installer..."
-wget -O "$MINICONDA_INSTALLER" "$MINICONDA_URL"
+echo "Creating virtual environment and installing dependencies from pyproject.toml..."
+uv sync
 
-echo "Installing Miniconda to $INSTALL_DIR..."
-bash "$MINICONDA_INSTALLER" -b -p "$INSTALL_DIR"
-
-# Initialize conda
-echo "Initializing conda..."
-eval "$($INSTALL_DIR/bin/conda shell.bash hook)"
-conda init
-
-# Activate conda and create env
-echo "Creating conda environment from requirements.yml..."
-conda env create -f requirements.yml
-
-echo "Setup complete! To activate your environment, run:"
-echo "  conda activate <env-name-from-yml>"
-
-pip install torch torchvision torchaudio
-
-# Cleanup
-rm "$MINICONDA_INSTALLER"
+echo "Setup complete!"
+echo "Run commands with 'uv run', e.g.:"
+echo "  uv run python main.py config/config_lfm.yml"
+echo "Or activate the environment directly:"
+echo "  source .venv/bin/activate"

@@ -12,6 +12,9 @@ notification/email_args.py
 /pycache/*
 *.pyc
 
+# ignore uv virtual environment (uv.lock IS committed)
+.venv/
+
 # ignore notebook checkpoints
 .ipynb_checkpoints/
 **/.ipynb_checkpoints/

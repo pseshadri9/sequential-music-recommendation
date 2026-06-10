@@ -8,13 +8,16 @@ Research code accompanying the RecSys 2023 MuRS talk *"Leveraging Negative Signa
 
 ## Setup & run
 
+Dependencies are managed with [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv.lock`).
+
 ```bash
-bash setup.sh                      # installs Miniconda + creates conda env "rec" from requirements.yml, then pip-installs torch
-conda activate rec
-python main.py config/config_lfm.yml   # train+eval on a chosen config (defaults to config/config_lfm.yml if no arg)
+bash setup.sh                              # installs uv if needed, then `uv sync` creates .venv and installs deps
+uv run python main.py config/config_lfm.yml   # train+eval on a chosen config (defaults to config/config_lfm.yml if no arg)
+# or: source .venv/bin/activate && python main.py config/config_lfm.yml
 ```
 
-- `requirements.yml` pins `python=3.9` + pytorch-lightning/torchmetrics/pandas; `setup.sh` installs torch separately via pip.
+- `pyproject.toml` declares deps unpinned (`requires-python = ">=3.9"`); `uv.lock` is the resolved, committed lockfile — run `uv lock` after editing deps. `torch`/`torchvision`/`torchaudio` install from the default PyPI index (CUDA build on Linux).
+- `[tool.uv] package = false` — this is an application/script repo, not an installable package, so uv doesn't try to build it.
 - There is **no test suite, linter, or build step** — `train_evaluate/{train,eval}.py` and `utility/run.py` are empty stubs. The only entry point is `main.py`.
 - `run.sh` is a scratch file holding example invocations and a `tensorboard --logdir ...` command (paths are stale). View logs with `tensorboard --logdir logger_runs/<save_dir>`.
 

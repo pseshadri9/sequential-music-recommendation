@@ -1,0 +1,22 @@
+[project]
+name = "sequential-music-recommendation"
+version = "0.1.0"
+description = "Leveraging Negative Signals with Self-Attention for Sequential Music Recommendation (MuRS @ RecSys 2023)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pytorch-lightning",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "torchmetrics",
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "seaborn",
+    "pyyaml",
+    "tqdm",
+]
+
+[tool.uv]
+package = false
