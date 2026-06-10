@@ -47,8 +47,11 @@ A single PyTorch Lightning module is the project's core; `main.py` imports it as
 - **Metrics**: top-K hit rate (`test_top_k`, K from `model_params.k`), `RetrievalMAP@10`, and a skip-specific `RetrievalMRR@10` (computed only over skipped targets). AUROC code exists but is commented out.
 - `dual_train: True` triggers a two-phase schedule in `main.py:train()` — first train embeddings with `return_skip=False`, reload best checkpoint, freeze the vocab embedding, then fine-tune with the skip loss on.
 
+### Logging (`main.py:get_logger`)
+`logging_params.logger` selects the Lightning logger: `"tensorboard"` (default) or `"wandb"`. `get_logger` builds it; `get_trainer` derives the checkpoint dir from the logger (`log_dir` for TensorBoard, else `save_dir`). For wandb, set `logging_params.wandb_project` / `wandb_entity` (entity defaults to your W&B login). The wandb import is lazy, so TensorBoard-only runs don't need it, but `wandb` is a declared dependency. The run name passed to either logger is `"<name>: <exp_name>"`.
+
 ### Outputs (`notification/manifest_handler.py`)
-After test, `manifestHandler` writes a JSON manifest to `logger_runs/manifest/<logging_params.name>/<run_name>-<n>.json` capturing the config, eval metrics, and best-checkpoint path. TensorBoard event files + checkpoints go under `logging_params.save_dir`. `notification/email.py` (`send_email`) can email results but depends on `notification/email_args.py`, which is gitignored.
+After test, `manifestHandler` writes a JSON manifest to `logger_runs/manifest/<logging_params.name>/<run_name>-<n>.json` capturing the config, eval metrics, and best-checkpoint path. Logger event files + checkpoints go under `logging_params.save_dir`. `notification/email.py` (`send_email`) can email results but depends on `notification/email_args.py`, which is gitignored.
 
 ## Things that look like code paths but aren't
 - `models/baseline_models.py` (Caser, etc.) and `models/baseline_model.py` have **broken imports** (`from constants import`, `from attention import` — no such top-level modules) and are not wired into `main.py`. Treat as WIP/standalone references.

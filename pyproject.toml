@@ -16,6 +16,7 @@ dependencies = [
     "seaborn",
     "pyyaml",
     "tqdm",
+    "wandb",
 ]
 
 [tool.uv]

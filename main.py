@@ -40,17 +40,39 @@ def train(runner, model, dual_train=False, config=None):
     model.return_skip = False
     return runner, model
 
+def get_logger(config, exp_name):
+    '''
+    Builds a PyTorch Lightning logger from config['logging_params']['logger'].
+    Supported values: 'tensorboard' (default) and 'wandb'. The wandb dependency
+    is imported lazily so a TensorBoard-only run does not require it installed.
+    '''
+    logging_params = config['logging_params']
+    logger_type = logging_params.get('logger', 'tensorboard').lower()
+    run_name = logging_params['name'] + f': {exp_name}'
+
+    if logger_type == 'wandb':
+        from pytorch_lightning.loggers import WandbLogger
+        return WandbLogger(save_dir=logging_params['save_dir'],
+                           name=run_name,
+                           project=logging_params.get('wandb_project', logging_params['name']),
+                           entity=logging_params.get('wandb_entity', None))
+    elif logger_type == 'tensorboard':
+        return TensorBoardLogger(save_dir=logging_params['save_dir'], name=run_name)
+
+    raise ValueError(f"Unknown logger '{logger_type}'; expected 'tensorboard' or 'wandb'")
+
 def get_trainer(config, ckpt_path = None):
-    tb_logger =  TensorBoardLogger(save_dir=config['logging_params']['save_dir'],
-                               name=config['logging_params']['name'] + f': {exp_name}',)
-    
-    checkpoint_callback = ModelCheckpoint(save_top_k=1, 
-                                     dirpath =os.path.join(tb_logger.log_dir , "checkpoints"), 
+    logger = get_logger(config, exp_name)
+
+    # TensorBoardLogger exposes a versioned `log_dir`; WandbLogger only has `save_dir`.
+    ckpt_dir = os.path.join(getattr(logger, 'log_dir', None) or logger.save_dir, "checkpoints")
+    checkpoint_callback = ModelCheckpoint(save_top_k=1,
+                                     dirpath = ckpt_dir,
                                      monitor= "val_loss",
                                      save_last= True,
                                      every_n_epochs=1)
-    
-    runner = Trainer(logger=tb_logger,
+
+    runner = Trainer(logger=logger,
                  callbacks=[
                      LearningRateMonitor(),
                      checkpoint_callback,
@@ -58,7 +80,7 @@ def get_trainer(config, ckpt_path = None):
                  gradient_clip_val=5,
                  #strategy=DDPStrategy(find_unused_parameters=False),
                  **config['trainer_params'])
-    return runner, tb_logger, checkpoint_callback
+    return runner, logger, checkpoint_callback
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:
@@ -94,7 +116,7 @@ if __name__ == '__main__':
 
     #model = torch.compile(model)
 
-    runner, tb_logger, checkpoint_callback = get_trainer(config)
+    runner, logger, checkpoint_callback = get_trainer(config)
 
     '''
     name = config['logging_params']['name']
@@ -145,7 +167,7 @@ if __name__ == '__main__':
 
     #print({f'top-{k_i} HR': v / total for k_i, v in top_k.items()})
     if config['data_params']['load_ckpt']:
-        runner = Trainer(logger=tb_logger,
+        runner = Trainer(logger=logger,
                  callbacks=[
                     LearningRateMonitor(),
                     ModelCheckpoint(save_top_k=1,
