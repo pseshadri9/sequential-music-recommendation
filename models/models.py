@@ -8,11 +8,24 @@ from utility import InfoNCE
 from data_process import MASKING_ITEM, PADDING_ITEM, SKIP_PAD
 
 class VanillaTransformer(pl.LightningModule): 
-    def __init__(self, max_seq_len = None, vocab_size = None, h_dim = None, 
+    def __init__(self, max_seq_len = None, vocab_size = None, h_dim = None,
                 lr = 0.005, nhead = 4, token_dim = None, dropout = 0.2, nEncoders = 1,
-                k = [1, 5, 10, 50, 100], return_skip = False, bidirectional = False, wt=1):
+                k = [1, 5, 10, 50, 100], return_skip = False, bidirectional = False, wt=1,
+                warmup_steps = 0, skip_proj = False, uncertainty_weighting = False,
+                wt_anneal_steps = 0, grad_surgery = 'none'):
         super(VanillaTransformer, self).__init__()
         self.save_hyperparameters()
+        self.warmup_steps = warmup_steps
+        # (a) dedicated InfoNCE projection head; (b) Kendall uncertainty loss weighting
+        self.uncertainty_weighting = uncertainty_weighting
+        self.skip_proj = None
+        # wt annealing: linearly ramp the skip-loss weight 0 -> wt over wt_anneal_steps.
+        self.wt_anneal_steps = wt_anneal_steps
+        # gradient surgery for the two-task conflict: 'none' | 'pcgrad' | 'cagrad'.
+        self.grad_surgery = grad_surgery
+        # surgery needs manual optimization (per-task backward passes).
+        if grad_surgery != 'none':
+            self.automatic_optimization = False
           
         # Define model architecture
 
@@ -49,8 +62,21 @@ class VanillaTransformer(pl.LightningModule):
         self.loss = torch.nn.NLLLoss(ignore_index=PADDING_ITEM)
         if self.return_skip:
             self.skip_loss = InfoNCE(negative_mode='paired', ignore_index=PADDING_ITEM) #torch.nn.CrossEntropyLoss(ignore_index=2)
-            #self.sigma_target = torch.nn.parameter.Parameter(torch.rand(1)).to(self.device)
-            #self.sigma_skip = torch.nn.parameter.Parameter(torch.rand(1)).to(self.device)
+
+            # (a) Project both contrastive branches through a shared head so InfoNCE
+            # gradients shape this head rather than directly perturbing the ranking embedding.
+            if skip_proj:
+                self.skip_proj = torch.nn.Sequential(
+                    torch.nn.Linear(token_dim, token_dim),
+                    torch.nn.GELU(),
+                    torch.nn.Linear(token_dim, token_dim),
+                )
+
+            # (b) Learned homoscedastic-uncertainty weights (log-variance parameterization,
+            # Kendall et al. 2018) in place of the fixed `wt`.
+            if self.uncertainty_weighting:
+                self.log_var_target = torch.nn.Parameter(torch.zeros(1))
+                self.log_var_skip = torch.nn.Parameter(torch.zeros(1))
         
         if self.bidirectional:
             self.mask_token = MASKING_ITEM
@@ -68,6 +94,12 @@ class VanillaTransformer(pl.LightningModule):
         self.MAP = RetrievalMAP(top_k=10)
         self.skip_MRR = RetrievalMRR(top_k = 10)
         self.MAP_outs = list()
+        # Running query-index offsets so each query gets a globally unique `indexes`
+        # value across the epoch's batches. Without this, per-batch arange() indexes
+        # collide across batches and torchmetrics merges all "query i" into one group
+        # (which drove MAP->0 and saturated MRR). Reset in on_*_epoch_end.
+        self._map_offset = 0
+        self._mrr_offset = 0
         self.init_weights()
 
     def init_weights(self):
@@ -181,6 +213,22 @@ class VanillaTransformer(pl.LightningModule):
     def configure_optimizers(self):
         # Define and return the optimizer
         optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr = self.lr) #weight_decay=1e-8
+
+        if self.warmup_steps and self.warmup_steps > 0:
+            # Linear LR warmup over `warmup_steps`, then the original 0.9-per-20k-steps decay.
+            # Stabilizes deeper (post-LN) stacks that diverge at full LR from step 0.
+            warmup = self.warmup_steps
+            def lr_lambda(step):
+                if step < warmup:
+                    return float(step + 1) / float(warmup)
+                return 0.9 ** ((step - warmup) // 20000)
+            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
+            }
+
+        # Default (no warmup): preserve original schedule — 0.9 decay every 20k steps.
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.9)
         return {
             "optimizer": optimizer,
@@ -227,9 +275,16 @@ class VanillaTransformer(pl.LightningModule):
             
             skip_loss = self.skip_loss(pos_query, pos_key, negative_keys=neg_targets)
 
-            train_loss =  self.wt*skip_loss + target_loss
-            #train_loss = (1/(2 * self.sigma_target ** 2)) * target_loss \
-                #+ (1/(self.sigma_skip ** 2)) * skip_loss + torch.log(self.sigma_skip) + torch.log(self.sigma_target)
+            if self.grad_surgery != 'none':
+                # PCGrad / CAGrad: de-conflict the two task gradients, then step manually.
+                self._surgery_step(target_loss, skip_loss)
+                train_loss = (target_loss + self._effective_wt() * skip_loss).detach()  # logging only
+            elif self.uncertainty_weighting:
+                # (b) precision = exp(-log_var); each task contributes 0.5*precision*L + 0.5*log_var
+                train_loss = (0.5 * torch.exp(-self.log_var_target) * target_loss + 0.5 * self.log_var_target
+                              + 0.5 * torch.exp(-self.log_var_skip) * skip_loss + 0.5 * self.log_var_skip).squeeze()
+            else:
+                train_loss =  self._effective_wt() * skip_loss + target_loss
         else:
             train_loss = target_loss #+ skip_loss #+ 0.1 * skip_loss
 
@@ -253,9 +308,70 @@ class VanillaTransformer(pl.LightningModule):
         
         if torch.isnan(train_loss).any():
             return None
+        # In manual-optimization (grad-surgery) mode the step already happened.
+        if not self.automatic_optimization:
+            return None
         return train_loss
 
-    
+    def _effective_wt(self):
+        # linear anneal of the skip-loss weight from 0 -> wt over wt_anneal_steps
+        if self.wt_anneal_steps and self.wt_anneal_steps > 0:
+            return self.wt * min(1.0, float(self.global_step + 1) / float(self.wt_anneal_steps))
+        return self.wt
+
+    def _surgery_step(self, target_loss, skip_loss):
+        """PCGrad / CAGrad gradient surgery for the (next-item, skip) two-task conflict.
+        Computes each task's gradient on the shared params, removes the conflicting
+        component, recombines, clips, and steps the optimizer manually."""
+        opt = self.optimizers()
+        params = [p for p in self.parameters() if p.requires_grad]
+
+        def flat_grad(loss, retain):
+            opt.zero_grad()
+            self.manual_backward(loss, retain_graph=retain)
+            return torch.cat([(p.grad.detach().reshape(-1) if p.grad is not None
+                               else torch.zeros(p.numel(), device=p.device)) for p in params])
+
+        g_t = flat_grad(target_loss, retain=True)
+        g_s = flat_grad(self._effective_wt() * skip_loss, retain=False)  # wt-scaled auxiliary
+
+        dot = torch.dot(g_t, g_s)
+        if self.grad_surgery == 'pcgrad':
+            if dot < 0:  # only project when the gradients conflict (use ORIGINAL grads for both)
+                g_t_p = g_t - (dot / (g_s.dot(g_s) + 1e-12)) * g_s
+                g_s_p = g_s - (dot / (g_t.dot(g_t) + 1e-12)) * g_t
+                g_t, g_s = g_t_p, g_s_p
+            final = g_t + g_s
+        elif self.grad_surgery == 'cagrad':
+            # CAGrad (2-task): d = g_avg + (c*||g_avg||/||g_w||) g_w, g_w = w*g_t+(1-w)*g_s,
+            # w minimizing g_avg.g_w + c*||g_avg||*||g_w||. 1-D grid search over w in [0,1].
+            c = 0.5
+            g_avg = 0.5 * (g_t + g_s)
+            ga_norm = g_avg.norm() + 1e-12
+            ws = torch.linspace(0, 1, 21, device=g_t.device)
+            best_w, best_obj = 0.0, None
+            for w in ws:
+                gw = w * g_t + (1 - w) * g_s
+                obj = torch.dot(g_avg, gw) + c * ga_norm * (gw.norm() + 1e-12)
+                if best_obj is None or obj < best_obj:
+                    best_obj, best_w = obj, float(w)
+            gw = best_w * g_t + (1 - best_w) * g_s
+            final = g_avg + (c * ga_norm / (gw.norm() + 1e-12)) * gw
+        else:
+            final = g_t + g_s
+
+        opt.zero_grad()
+        idx = 0
+        for p in params:
+            n = p.numel()
+            p.grad = final[idx:idx + n].view_as(p).clone()
+            idx += n
+        self.clip_gradients(opt, gradient_clip_val=5, gradient_clip_algorithm="norm")
+        opt.step()
+        sch = self.lr_schedulers()
+        if sch is not None:
+            sch.step()
+
     def validation_step(self, valid_batch, batch_idx):
         # Defining validation steps for our model
         sessions, targets = self.get_val_batch(valid_batch[:-1])
@@ -293,10 +409,12 @@ class VanillaTransformer(pl.LightningModule):
         else:
             loss = target_loss
 
-        indexes = torch.arange(output.shape[0]).unsqueeze(dim=1).tile((output.shape[1]))
+        indexes = (torch.arange(output.shape[0]) + self._map_offset).unsqueeze(dim=1).tile((output.shape[1]))
+        self._map_offset += output.shape[0]
         MAP_target = torch.zeros_like(indexes).bool()
         MAP_target[range(targets.shape[0]), targets] = True
-        self.MAP.update(output.detach().cpu(), MAP_target.detach().cpu(), indexes=indexes.detach().cpu())
+        # RetrievalMAP needs non-negative scores; `output` is log-softmax (<=0), so exp() it.
+        self.MAP.update(output.exp().detach().cpu(), MAP_target.detach().cpu(), indexes=indexes.detach().cpu())
         #self.auroc_target(output, targets)
         #self.compute_MAP(output.detach(), targets.detach(), skips.detach())
 
@@ -306,7 +424,8 @@ class VanillaTransformer(pl.LightningModule):
             skip_output = output[skipped_targets, :]
             skip_target = targets[skipped_targets]
 
-            s_indexes = torch.arange(skip_output.shape[0]).unsqueeze(dim=1).tile((skip_output.shape[1]))
+            s_indexes = (torch.arange(skip_output.shape[0]) + self._mrr_offset).unsqueeze(dim=1).tile((skip_output.shape[1]))
+            self._mrr_offset += skip_output.shape[0]
             MRR_target = torch.zeros_like(s_indexes).bool()
             MRR_target[range(skip_target.shape[0]), skip_target] = True
             self.skip_MRR.update(skip_output.exp().detach().cpu(), MRR_target.detach().cpu(), indexes=s_indexes.detach().cpu())
@@ -396,10 +515,12 @@ class VanillaTransformer(pl.LightningModule):
         #self.auroc_skip(output[index, torch.cat((sessions[:, :-1], targets.unsqueeze(dim=-1)), axis = 1)], skips.long())
 
         ##MAP
-        indexes = torch.arange(output.shape[0]).unsqueeze(dim=1).tile((output.shape[1]))
+        indexes = (torch.arange(output.shape[0]) + self._map_offset).unsqueeze(dim=1).tile((output.shape[1]))
+        self._map_offset += output.shape[0]
         MAP_target = torch.zeros_like(indexes).bool()
         MAP_target[range(targets.shape[0]), targets] = True
-        self.MAP.update(output.detach().cpu(), MAP_target.detach().cpu(), indexes=indexes.detach().cpu())
+        # RetrievalMAP needs non-negative scores; `output` is log-softmax (<=0), so exp() it.
+        self.MAP.update(output.exp().detach().cpu(), MAP_target.detach().cpu(), indexes=indexes.detach().cpu())
 
         if torch.isnan(loss):
             return None
@@ -413,7 +534,8 @@ class VanillaTransformer(pl.LightningModule):
             skip_output = output[skipped_targets, :]
             skip_target = targets[skipped_targets]
 
-            s_indexes = torch.arange(skip_output.shape[0]).unsqueeze(dim=1).tile((skip_output.shape[1]))
+            s_indexes = (torch.arange(skip_output.shape[0]) + self._mrr_offset).unsqueeze(dim=1).tile((skip_output.shape[1]))
+            self._mrr_offset += skip_output.shape[0]
             MRR_target = torch.zeros_like(s_indexes).bool()
             MRR_target[range(skip_target.shape[0]), skip_target] = True
             self.skip_MRR.update(skip_output.exp().detach().cpu(), MRR_target.detach().cpu(), indexes=s_indexes.detach().cpu())
@@ -446,6 +568,13 @@ class VanillaTransformer(pl.LightningModule):
             keys = a
         else:
             keys = self.vocab(sessions)
+
+        # (a) projection head: map query (decoder out) and key (vocab emb) reps into a
+        # shared contrastive space before assembling positives/negatives.
+        if self.skip_proj is not None:
+            a = self.skip_proj(a)
+            keys = self.skip_proj(keys)
+
         neg_mask = skip == 1
         pos_mask = skip == 0
 
@@ -509,11 +638,13 @@ class VanillaTransformer(pl.LightningModule):
         #self.log('Val AUROC Skip', self.auroc_skip, on_epoch=True)
         self.log('Val MAP', self.MAP.compute().item(), on_epoch=True)
         self.MAP.reset()
+        self._map_offset = 0
         
         num_skip = torch.cat(self.skip_MRR.target, dim=0).sum()
         self.log('Num Val Skips', num_skip, on_epoch=True)
         self.log('Val Skip MRR', self.skip_MRR.compute().item(), on_epoch=True)
         self.skip_MRR.reset()
+        self._mrr_offset = 0
 
         self.val_outs.clear()  # free memory
         self.skip_outs.clear()
@@ -536,11 +667,13 @@ class VanillaTransformer(pl.LightningModule):
         #self.log('Test AUROC Skip', self.auroc_skip, on_epoch=True)
         self.log('Test MAP', self.MAP.compute().item(), on_epoch=True)
         self.MAP.reset()
+        self._map_offset = 0
 
         num_skip = torch.cat(self.skip_MRR.target, dim=0).sum()
         self.log('Num Test Skips', num_skip, on_epoch=True)
         self.log('Test Skip MRR', self.skip_MRR.compute().item(), on_epoch=True)
         self.skip_MRR.reset()
+        self._mrr_offset = 0
 
         self.val_outs.clear()  # free memory
         self.skip_outs.clear()

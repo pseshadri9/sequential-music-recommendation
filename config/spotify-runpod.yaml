@@ -1,0 +1,44 @@
+model_params:
+  max_seq_len: 20
+  h_dim: 128
+  nhead : 8
+  token_dim: 128
+  nEncoders: 4
+  dropout: 0.2
+  k: [1, 5, 10, 20]
+  return_skip: True        # toggled per experiment: False = baseline, True = contrastive skip loss
+  lr: 0.005                # LR-matched to the 2-layer runs; warmup_steps makes depth 4 trainable at this LR
+  warmup_steps: 2000       # linear LR warmup (~1 epoch) to stabilize the deeper post-LN stack
+  skip_proj: False         # (a) dedicated InfoNCE projection head (only used when return_skip)
+  uncertainty_weighting: False  # (b) Kendall learned loss weighting in place of fixed wt
+  wt_anneal_steps: 0       # linear anneal of skip-loss weight 0->wt over N steps (0 = off)
+  grad_surgery: cagrad       # none | pcgrad | cagrad (gradient-surgery for the 2-task conflict)
+  bidirectional: False
+  wt: 0.5
+
+dual_train: False
+dev: False
+
+data_params:
+  data_path: "/workspace/data"
+  load_ckpt: False
+  ckpt_path: "logger_runs/spotify-runpod/checkpoints"
+  ckpt_type: ""
+  batch_size: 288          # max cold-start batch on RTX 5090 (32GB), ~30GB peak; needs PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  patch_size: 64
+  num_workers: 4
+
+exp_params:
+  manual_seed: 1265
+
+trainer_params:
+  max_epochs: 12
+  accelerator: "gpu"
+  devices: [0]
+
+logging_params:
+  save_dir: "logger_runs/spotify-runpod/"
+  name: 'Spotify-runpod'
+  logger: "wandb"
+  wandb_project: "sequential-music-recommendation"
+  wandb_entity: null

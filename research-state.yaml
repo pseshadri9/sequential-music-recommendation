@@ -1,0 +1,60 @@
+project: negative-signals-sequential-music-rec
+question: >
+  Does a self-attention contrastive (InfoNCE) auxiliary loss on skip signals improve
+  next-track sequential recommendation, and how should the next-item and skip losses
+  be combined given their gradients can conflict?
+phase: inner-loop  # bootstrap | inner-loop | outer-loop | finalize
+loop:
+  cron_job: a9678b9b      # every 20m, session-only
+  interval: 20m
+
+setup:
+  data: /workspace/data   # Spotify Sequential Skip Prediction Challenge, ~561k sessions, 628k vocab
+  model: VanillaTransformer (4-layer post-LN, token_dim 128, 8 heads, h_dim 128, seq 20)
+  train: batch 288, lr 0.005 + warmup 2000, 12 epochs, seed 1265, RTX 5090 torch cu128
+  eval: dual-best checkpoint (min val_loss + max Val top-1); metric = next-track top-1
+  config: config/spotify-runpod.yaml
+  launcher: run_runpod.sh "<name>"  (env + wandb + PYTORCH_CUDA_ALLOC_CONF=expandable_segments)
+
+baseline:
+  no_skip_top1_last_epoch: 0.3999
+  no_skip_top1_best_ckpt: PENDING   # re-test epoch=2-step=5847-v4.ckpt
+
+hypotheses:
+  H1_skip_helps:
+    statement: contrastive skip loss improves next-track top-1 over no-skip
+    status: WEAKLY-SUPPORTED  # wt=0.75 @best-top1 0.4041 > baseline last-epoch 0.3999; needs fair best-ckpt baseline + multi-seed
+  H2_wt_sweet_spot:
+    statement: there is an intermediate optimal skip weight
+    status: SUPPORTED  # inverted-U, peak wt~0.75
+  H3_conflict_mitigation_helps:
+    statement: gradient-conflict-aware combiners beat fixed wt
+    status: REFUTED  # projection-head/uncertainty/PCGrad/CAGrad none beat tuned wt
+  H4_anneal_helps:
+    statement: annealing the auxiliary weight in improves results
+    status: REFUTED  # annealing hurt (top-1 ~0.36)
+
+results_top1:  # @best-val_loss / @best-top1
+  no_skip: {last_epoch: 0.3999, best_ckpt: PENDING}
+  wt0.1:  {valloss: 0.3670, top1: 0.3670}
+  wt0.25: {valloss: 0.3934, top1: 0.3936}
+  wt0.5:  PENDING-RERUN
+  wt0.75: {valloss: 0.3941, top1: 0.4041}   # BEST
+  wt1.0:  {valloss: 0.3920, top1: 0.3982}
+  anneal: {valloss: 0.3505, top1: 0.3616}
+  pcgrad: {valloss: 0.3870, top1: 0.3956}
+  cagrad: RUNNING
+  proj_head_a:  {last_epoch: 0.3706}   # pre-sorted-vocab
+  uncertainty_b: {last_epoch: 0.3928}  # pre-sorted-vocab
+
+next_actions:
+  - record CAGrad dual-best eval
+  - re-run plain-skip wt=0.5 fresh (sorted-vocab, dual-best) -> /tmp/exp_wt0.5.log
+  - retroactive re-test no-skip baseline best-ckpt (epoch=2-step=5847-v4.ckpt) -> /tmp/reval_baseline.log
+  - outer-loop synthesis; update findings.md; build to_human/ progress report
+  - decide CONCLUDE -> ml-paper-writing
+
+keep_checkpoints:   # do not prune (disk quota)
+  - epoch=2-step=5847-v4.ckpt   # no-skip baseline
+  - epoch=1-step=3898-v2.ckpt   # (a) projection head
+  - epoch=4-step=9745.ckpt      # (b) uncertainty weighting

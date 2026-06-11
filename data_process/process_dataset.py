@@ -91,7 +91,10 @@ class SpotifyDataModule(pl.LightningDataModule):
         return self.preprocess_data(sessions, skips, vocab, session_ids)
     
     def preprocess_data(self, sessions, skips, vocab, session_ids):
-        vocab = {v :k + NUM_RESERVED_TOKENS for k, v in enumerate(vocab)}
+        # sorted() makes the track->index mapping deterministic across processes
+        # (a plain set of track-id strings iterates in PYTHONHASHSEED-dependent order,
+        # which breaks loading a checkpoint in a fresh process).
+        vocab = {v :k + NUM_RESERVED_TOKENS for k, v in enumerate(sorted(vocab))}
         if self.preprocess is None:
             sessions = [[vocab[x] for x in session] for session in sessions]
         elif self.preprocess == 'positive':

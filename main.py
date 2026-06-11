@@ -30,7 +30,7 @@ def train(runner, model, dual_train=False, config=None):
         model.vocab.weight.requires_grad = False
         #model.decoder_bias.requires_grad = False
         #runner.fit_loop.max_epochs= config['trainer_params']['max_epochs'] * 2
-        runner, _ , _ = get_trainer(config)
+        runner, _ , _, _ = get_trainer(config)
         runner.fit(model, data.train_dataloader(), data.val_dataloader())
 
     else:
@@ -64,23 +64,32 @@ def get_logger(config, exp_name):
 def get_trainer(config, ckpt_path = None):
     logger = get_logger(config, exp_name)
 
-    # TensorBoardLogger exposes a versioned `log_dir`; WandbLogger only has `save_dir`.
-    ckpt_dir = os.path.join(getattr(logger, 'log_dir', None) or logger.save_dir, "checkpoints")
-    checkpoint_callback = ModelCheckpoint(save_top_k=1,
-                                     dirpath = ckpt_dir,
-                                     monitor= "val_loss",
-                                     save_last= True,
-                                     every_n_epochs=1)
+    # Per-run checkpoint subdir (by run name) so each run's bests are cleanly isolated
+    # and identifiable — avoids the shared-dir version-suffix collisions.
+    base = getattr(logger, 'log_dir', None) or logger.save_dir
+    ckpt_dir = os.path.join(base, "checkpoints", str(exp_name).replace('/', '_'))
+
+    # Two "best" checkpoints: by min val_loss and by max retrieval metric (Val top-1).
+    # We test BOTH (they usually coincide); `last` is no longer used for eval.
+    ckpt_loss = ModelCheckpoint(save_top_k=1, dirpath=ckpt_dir, monitor="val_loss",
+                                mode="min", filename="best-valloss-{epoch}-{step}", every_n_epochs=1)
+    ckpt_metric = ModelCheckpoint(save_top_k=1, dirpath=ckpt_dir, monitor="Val top-1",
+                                  mode="max", filename="best-top1-{epoch}-{step}", every_n_epochs=1)
+
+    # Grad-surgery runs use manual optimization, which forbids Trainer-level gradient
+    # clipping (it's done manually in the model); disable it here for those runs.
+    gclip = None if config['model_params'].get('grad_surgery', 'none') != 'none' else 5
 
     runner = Trainer(logger=logger,
                  callbacks=[
                      LearningRateMonitor(),
-                     checkpoint_callback,
+                     ckpt_loss,
+                     ckpt_metric,
                  ],
-                 gradient_clip_val=5,
+                 gradient_clip_val=gclip,
                  #strategy=DDPStrategy(find_unused_parameters=False),
                  **config['trainer_params'])
-    return runner, logger, checkpoint_callback
+    return runner, logger, ckpt_loss, ckpt_metric
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:
@@ -116,7 +125,7 @@ if __name__ == '__main__':
 
     #model = torch.compile(model)
 
-    runner, logger, checkpoint_callback = get_trainer(config)
+    runner, logger, ckpt_loss, ckpt_metric = get_trainer(config)
 
     '''
     name = config['logging_params']['name']
@@ -193,7 +202,17 @@ if __name__ == '__main__':
         except KeyboardInterrupt:
             pass
 
-        evals = runner.test(ckpt_path="last", dataloaders = data.test_dataloader())
+        # Evaluate the BEST checkpoints (not the final epoch): by min val_loss and by
+        # max Val top-1. These usually coincide; we report both. Capture both paths
+        # BEFORE testing — runner.test(ckpt_path=...) restores callback state and would
+        # otherwise clobber the second callback's best_model_path with a stale value.
+        valloss_ckpt = ckpt_loss.best_model_path
+        top1_ckpt = ckpt_metric.best_model_path
+        print("\n===== TEST @ best val_loss:", valloss_ckpt, "=====")
+        evals_valloss = runner.test(ckpt_path=valloss_ckpt, dataloaders = data.test_dataloader())
+        print("\n===== TEST @ best Val top-1:", top1_ckpt, "=====")
+        evals_metric = runner.test(ckpt_path=top1_ckpt, dataloaders = data.test_dataloader())
+        evals = evals_valloss
 
     manifest = manifestHandler(config=config, eval=evals[0], model_path=runner.checkpoint_callback.best_model_path, name=exp_name)
     manifest.save()
